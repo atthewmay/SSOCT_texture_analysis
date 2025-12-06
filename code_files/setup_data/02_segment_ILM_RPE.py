@@ -1,0 +1,143 @@
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[1]))  # adds Han_AIR/ to path
+import file_utils as fu
+import numpy as np
+from datetime import date
+
+import segmentation_utils as su
+from segmentation_scratch.paper_canny_2022 import RpeDebug
+# import segmentation_scratch.latest_segmentation_functions as lsf
+# import segmentation_scratch.seg_runner as experimental_seg_fns
+import segmentation_scratch.latest_segmentation_functions as lsf
+from concurrent.futures import ProcessPoolExecutor
+from collections import defaultdict
+from dataclasses import asdict
+import dask.array as da
+
+# def process_volume(vol):
+#     """process a single volume and pull the ilm and rpe, which will be saved to surfaces"""
+#     layers_dict = {}
+#     with ProcessPoolExecutor(max_workers=12) as exe:
+#         futures = [
+#             exe.submit(lsf.worker_process_bscan_layers, idx, vol[idx, :, :], 1.5)
+#             for idx in range(vol.shape[0])
+#         ]
+#         # collect results and sort by bscan_idx
+#         results = [fut.result() for fut in futures]
+#         for bscan_idx, dbg_ilm,dbg_rpe in sorted(results, key=lambda x: x[0]):
+#             dbg_out = RpeDebug(rpe_raw=dbg_rpe.rpe_raw,rpe_smooth=dbg_rpe.rpe_smooth, ilm_raw=dbg_ilm.ilm_raw, ilm_smooth=dbg_ilm.ilm_smooth)
+#             # dbg_out = uncompress_layers_inplace(dbg_out)
+#             key = f'bscan{bscan_idx}'
+#             layers_dict[key] = dbg_out
+
+#     stacked_layers = collate_layers(layers_dict)
+
+#     return stacked_layers
+
+def process_volume(vol_fp):
+    """input the volume fp bc now we have to load the onh annotations as well
+    process a single volume and pull the ilm and rpe, which will be saved to surfaces"""
+    layers_dict = {}
+
+    vol = fu.load_ss_volume2(vol_fp,mmap=True) # should be fast and memory light?
+    annotation_root = Path("/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations")
+    annotation_path = fu.image_to_annotation_path(vol_fp,annotation_root)
+    ONH_info = da.from_zarr(annotation_path) # should be fast and memory light?)
+    assert ONH_info.shape == vol.shape
+
+    with ProcessPoolExecutor(max_workers=12) as exe:
+        futures = [
+            exe.submit(lsf.worker_process_bscan_layers, (idx, vol[idx, :, :],ONH_info[idx,:,:]), 1.5)
+            for idx in range(vol.shape[0])
+        ]
+        # collect results and sort by bscan_idx
+        results = [fut.result() for fut in futures]
+        for bscan_idx, dbg_ilm,dbg_rpe in sorted(results, key=lambda x: x[0]):
+            dbg_out = RpeDebug(rpe_raw=dbg_rpe.rpe_raw,rpe_smooth=dbg_rpe.rpe_smooth, ilm_raw=dbg_ilm.ilm_raw, ilm_smooth=dbg_ilm.ilm_smooth)
+            # dbg_out = uncompress_layers_inplace(dbg_out)
+            key = f'bscan{bscan_idx}'
+            layers_dict[key] = dbg_out
+
+    stacked_layers = collate_layers(layers_dict)
+
+    return stacked_layers
+
+
+
+# def uncompress_layers_inplace(dbg, *, vertical_factor=1.5, original_length=512):
+#     """
+#     Upsample every non-None array in dbg and store back on the same object.
+#     """
+#     for name, arr in asdict(dbg).items():
+#         if arr is None:
+#             continue
+#         up = su.upsample_path(arr,
+#                               vertical_factor=vertical_factor,
+#                               original_length=original_length)
+#         setattr(dbg, name, up)
+#     return dbg
+
+
+def collate_layers(layers_dict):
+    """
+    layers_dict: { 'bscan0': RpeDebug, 'bscan1': RpeDebug, ... }
+    
+    Returns a dict mapping each RpeDebug field name to a stacked array
+    of shape (n_slices, width).
+    """
+    # 1) Prepare empty lists for each field
+    field_lists = defaultdict(list)  
+
+    # 2) Iterate in sorted b-scan order to keep slice axis consistent
+    for key in sorted(layers_dict.keys(), key=lambda k: int(k.replace('bscan',''))):
+        dbg: RpeDebug = layers_dict[key]
+        
+        # asdict gives you a normal dict of { field_name: value_array }
+        for field_name, arr in asdict(dbg).items():
+            # skip any that are None (if you made fields optional)
+            if arr is None:  
+                continue
+            field_lists[field_name].append(arr)
+
+    # 3) Stack each list into one 2D array (slices × width)
+    stacked = {}
+    for field_name, list_of_arr in field_lists.items():
+        # ensure every arr in list_of_arr has the same shape
+        stacked[field_name] = np.stack(list_of_arr, axis=0)
+
+    return stacked
+
+def batch_process_dir(
+    dir_path: str,
+    file_ext: str = '.npy',
+    output_dir_suffix: str = f"_layers_{date.today().strftime('%Y-%m-%d')}",
+):
+    """
+    Walk `dir_path`, process every file ending in `file_ext` as a volume,
+    and save a `{stem}_rpe.npy` array of shape (N_slices, W).
+    """
+    dir_path = Path(dir_path)
+
+    for vol_path in sorted(dir_path.glob(f'*{file_ext}')):
+        print(f"Processing {vol_path.name}…", end=' ', flush=True)
+        # volume = fu.load_ss_volume(vol_path)
+        # shape check
+        # if volume.ndim != 3:
+        #     print("skipping (not 3D)")
+        #     continue
+        stacked_layers = process_volume(vol_path)
+        # Save name and process
+        vol_dir = vol_path.parent
+        vol_name = vol_path.with_suffix('').name
+        processed_dir = vol_dir.with_name(vol_dir.name.strip("_mini") + output_dir_suffix)
+        processed_dir.mkdir(parents=True,exist_ok=True)
+        out_path = processed_dir / f"{vol_name}_layers"
+        np.savez_compressed(out_path, **stacked_layers)
+
+        print("done →", out_path.name)
+
+
+if __name__ == '__main__':
+    # batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_all_volumes_extra_mini/',file_ext='.npy')
+    batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_all_volumes/',file_ext='.img')
