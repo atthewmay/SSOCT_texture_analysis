@@ -132,4 +132,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_all_volumes/',file_ext='.img')
-    batch_process_dir(dir_path=args.volumes_dir,file_ext='.npy',annotation_root=args.annotation_root)
+    batch_process_dir(dir_path=args.volumes_root,file_ext='.npy',annotation_root=args.annotation_root)
