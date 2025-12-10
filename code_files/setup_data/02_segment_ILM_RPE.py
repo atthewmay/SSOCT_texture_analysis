@@ -13,46 +13,25 @@ from dataclasses import asdict
 import dask.array as da
 import math
 
-# def process_volume(vol):
-#     """process a single volume and pull the ilm and rpe, which will be saved to surfaces"""
-#     layers_dict = {}
-#     with ProcessPoolExecutor(max_workers=12) as exe:
-#         futures = [
-#             exe.submit(lsf.worker_process_bscan_layers, idx, vol[idx, :, :], 1.5)
-#             for idx in range(vol.shape[0])
-#         ]
-#         # collect results and sort by bscan_idx
-#         results = [fut.result() for fut in futures]
-#         for bscan_idx, dbg_ilm,dbg_rpe in sorted(results, key=lambda x: x[0]):
-#             dbg_out = RpeDebug(rpe_raw=dbg_rpe.rpe_raw,rpe_smooth=dbg_rpe.rpe_smooth, ilm_raw=dbg_ilm.ilm_raw, ilm_smooth=dbg_ilm.ilm_smooth)
-#             # dbg_out = uncompress_layers_inplace(dbg_out)
-#             key = f'bscan{bscan_idx}'
-#             layers_dict[key] = dbg_out
-
-#     stacked_layers = collate_layers(layers_dict)
-
-#     return stacked_layers
-
 def subsample_volume(volume,smaller_zdim):
     """used to correct the spacing of slices in ONH info"""
     step_size = int(math.ceil(volume.shape[0]/smaller_zdim))
     volume_out = volume[np.arange(0,volume.shape[0],step_size)]
     return volume_out
 
-def process_volume(vol_fp):
+def process_volume(vol_fp,annotation_root):
     """input the volume fp bc now we have to load the onh annotations as well
     process a single volume and pull the ilm and rpe, which will be saved to surfaces"""
     layers_dict = {}
 
     vol = fu.load_ss_volume2(vol_fp,mmap=True) # should be fast and memory light?
-    annotation_root = Path("/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations")
+    annotation_root = Path(annotation_root)
     annotation_path = fu.image_to_annotation_path(vol_fp,annotation_root)
     ONH_info = da.from_zarr(annotation_path) # should be fast and memory light?)
     # if step_size == 1:
     if ONH_info.shape != vol.shape:
         print(f"our ONH_info shape = {ONH_info.shape} and our volume shape = {vol.shape}. Will be subsampling")
         ONH_info = subsample_volume(ONH_info,vol.shape[0])
-        # assert ONH_info.shape == vol.shape
 
     with ProcessPoolExecutor(max_workers=12) as exe:
         futures = [
@@ -65,29 +44,12 @@ def process_volume(vol_fp):
         results = [fut.result() for fut in futures]
         # for bscan_idx, dbg_ilm,dbg_rpe in sorted(results, key=lambda x: x[0]):
         for bscan_idx, out_dict in sorted(results, key=lambda x: x[0]):
-            # dbg_out = RpeDebug(rpe_raw=dbg_rpe.rpe_raw,rpe_smooth=dbg_rpe.rpe_smooth, ilm_raw=dbg_ilm.ilm_raw, ilm_smooth=dbg_ilm.ilm_smooth)
-            # dbg_out = {'rpe_raw':dbg_rpe.rpe_raw,'rpe_smooth':dbg_rpe.rpe_smooth, 'ilm_raw':dbg_ilm.ilm_raw, 'ilm_smooth':dbg_ilm.ilm_smooth}
-            # dbg_out = uncompress_layers_inplace(dbg_out)
             layers_dict[f'bscan{bscan_idx}'] = out_dict
 
     stacked_layers = collate_layers(layers_dict)
 
     return stacked_layers
 
-
-
-# def uncompress_layers_inplace(dbg, *, vertical_factor=1.5, original_length=512):
-#     """
-#     Upsample every non-None array in dbg and store back on the same object.
-#     """
-#     for name, arr in asdict(dbg).items():
-#         if arr is None:
-#             continue
-#         up = su.upsample_path(arr,
-#                               vertical_factor=vertical_factor,
-#                               original_length=original_length)
-#         setattr(dbg, name, up)
-#     return dbg
 
 
 def collate_layers(layers_dict):
@@ -124,6 +86,7 @@ def collate_layers(layers_dict):
 def batch_process_dir(
     dir_path: str,
     file_ext: str = '.npy',
+    annotation_root = None,
     output_dir_suffix: str = f"_layers_{date.today().strftime('%Y-%m-%d')}",
 ):
     """
@@ -134,12 +97,7 @@ def batch_process_dir(
 
     for vol_path in sorted(dir_path.glob(f'*{file_ext}')):
         print(f"Processing {vol_path.name}…", end=' ', flush=True)
-        # volume = fu.load_ss_volume(vol_path)
-        # shape check
-        # if volume.ndim != 3:
-        #     print("skipping (not 3D)")
-        #     continue
-        stacked_layers = process_volume(vol_path)
+        stacked_layers = process_volume(vol_path,annotation_root)
         # Save name and process
         vol_dir = vol_path.parent
         vol_name = vol_path.with_suffix('').name
@@ -152,5 +110,26 @@ def batch_process_dir(
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Your script description here."
+    )
+
+    parser.add_argument(
+        "--annotation_root",
+        type=str,
+        default = "/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations",
+        # required=True,
+        help="Path to the input volume or data directory."
+    )
+
+    parser.add_argument(
+        "--volumes_root",
+        type=str,
+        default='/Users/matthewhunt/Research/Iowa_Research/test_han_air_repo/SSOCT_texture_analysis/data/data_volumes_mini/',
+        help="Directory where outputs will be saved."
+    )
+    args = parser.parse_args()
+
     # batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_all_volumes/',file_ext='.img')
-    batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/test_han_air_repo/SSOCT_texture_analysis/data/data_volumes_mini/',file_ext='.npy')
+    batch_process_dir(dir_path=args.volumes_dir,file_ext='.npy',annotation_root=args.annotation_root)
