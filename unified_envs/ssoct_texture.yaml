@@ -1,0 +1,39 @@
+name: ssoct_texture
+channels:
+  - conda-forge
+dependencies:
+  # Core
+  - python=3.10.18
+  - pip
+
+  # Array / math / stats
+  - numpy
+  - scipy
+  - pandas
+  - scikit-image
+  - scikit-learn
+
+  # IO / imaging
+  - imageio
+  - tifffile
+  - zarr
+  - numcodecs
+  - opencv
+
+  # Parallel / big arrays
+  - dask[array]
+
+  # Plotting
+  - matplotlib
+
+  # Napari + GUI stack
+  - napari
+  - pyqt5
+  - pyopengl
+  - vispy
+  - magicgui
+
+  # Utilities
+  - psutil
+  - rich
+  - tqdm
