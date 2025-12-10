@@ -11,6 +11,7 @@ from concurrent.futures import ProcessPoolExecutor
 from collections import defaultdict
 from dataclasses import asdict
 import dask.array as da
+import math
 
 # def process_volume(vol):
 #     """process a single volume and pull the ilm and rpe, which will be saved to surfaces"""
@@ -32,6 +33,12 @@ import dask.array as da
 
 #     return stacked_layers
 
+def subsample_volume(volume,smaller_zdim):
+    """used to correct the spacing of slices in ONH info"""
+    step_size = int(math.ceil(volume.shape[0]/smaller_zdim))
+    volume_out = volume[np.arange(0,volume.shape[0],step_size)]
+    return volume_out
+
 def process_volume(vol_fp):
     """input the volume fp bc now we have to load the onh annotations as well
     process a single volume and pull the ilm and rpe, which will be saved to surfaces"""
@@ -41,7 +48,11 @@ def process_volume(vol_fp):
     annotation_root = Path("/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations")
     annotation_path = fu.image_to_annotation_path(vol_fp,annotation_root)
     ONH_info = da.from_zarr(annotation_path) # should be fast and memory light?)
-    assert ONH_info.shape == vol.shape
+    # if step_size == 1:
+    if ONH_info.shape != vol.shape:
+        print(f"our ONH_info shape = {ONH_info.shape} and our volume shape = {vol.shape}. Will be subsampling")
+        ONH_info = subsample_volume(ONH_info,vol.shape[0])
+        # assert ONH_info.shape == vol.shape
 
     with ProcessPoolExecutor(max_workers=12) as exe:
         futures = [
