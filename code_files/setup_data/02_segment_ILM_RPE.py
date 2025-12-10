@@ -153,4 +153,4 @@ def batch_process_dir(
 
 if __name__ == '__main__':
     # batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_all_volumes/',file_ext='.img')
-    batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_volumes_mini/',file_ext='.npy')
+    batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/test_han_air_repo/SSOCT_texture_analysis/data/data_volumes_mini/',file_ext='.npy')
