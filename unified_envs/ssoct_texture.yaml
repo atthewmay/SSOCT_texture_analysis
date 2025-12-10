@@ -28,7 +28,7 @@ dependencies:
 
   # Napari + GUI stack
   - napari
-  - pyqt5
+  - pyqt
   - pyopengl
   - vispy
   - magicgui
