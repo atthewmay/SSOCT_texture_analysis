@@ -209,26 +209,7 @@ class PlotTracer:
             self.images.append((title or "", arr.copy()))
 
         return arr
-    
-    # def plot_all(self,max_cols = 6):
-    # import math
-    # N = len(tuple_pairs)
-    # max_cols = 6
-
-    # # we want at most max_cols per row
-    # ncols = min(N, max_cols)
-    # # ceil division to figure out how many rows
-    # nrows = math.ceil(N / max_cols)
-
-    # # make each subplot roughly 4″×4″
-    # fig, axes = plt.subplots(nrows, ncols,
-    #                         figsize=(4*ncols, 4*nrows),
-    #                         squeeze=False)
-    # axes = axes.flatten()
-
-
-    #     plt.subplot()
-
+   
     ### NAPARI Utils
 import numpy as np
 from scipy.ndimage import map_coordinates
@@ -301,7 +282,6 @@ def flatten_image_centered(idx:int ,img: np.ndarray, rpe_curve: np.ndarray, outp
 
     return idx,flat_img
 
-from dataclasses import asdict, replace
 import numpy as np
 
 def flatten_other_curves(

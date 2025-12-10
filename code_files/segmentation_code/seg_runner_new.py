@@ -261,11 +261,11 @@ def main():
 
     if args.debug or args.max_workers <= 1:
         # Serial, pdb-friendly path
-        results = [sp.process_bscan_12_5_25(t) for t in work]
+        results = [sp.process_bscan_12_6_25(t) for t in work]
     else:
         from concurrent.futures import ProcessPoolExecutor
         with ProcessPoolExecutor(max_workers=args.max_workers) as exe:
-            futures = [exe.submit(sp.process_bscan_12_5_25, t) for t in work]
+            futures = [exe.submit(sp.process_bscan_12_6_25, t) for t in work]
             results = [f.result() for f in futures]
 
     # Sort by the artificial order index (so page 1 is the current slice)

@@ -77,6 +77,7 @@ class RPEContext:
     enh: Optional[np.ndarray] = None
     enh_f: Optional[np.ndarray] = None
     peak_suppressed: Optional[np.ndarray] = None
+    peak_suppressed_recalculated: Optional[np.ndarray] = None
     seeds: Optional[np.ndarray] = None
     prob: Optional[np.ndarray] = None
     edge: Optional[np.ndarray] = None
@@ -94,10 +95,42 @@ class RPEContext:
 
     rpe_smooth: Optional[np.ndarray] = None
 
-    # # debug / history
-    # debug: bool = False
-    # history: Dict[str, Any] = field(default_factory=dict)
+    # debug / history
+    debug: bool = True
+    history: Dict[str, Any] = field(default_factory=dict)
     # _initialized: bool = field(default=False, init=False, repr=False)
+    def log_history(self,name,attribute):
+        """logs a history, probably prior to chnaging it, only occurs if debug is true"""
+        if not self.debug:
+            return
+        self.history[name] = attribute
+
+    def __getattr__(self, name: str):
+        """
+        Only called *if normal attribute lookup fails*.
+        Try history[name] as a fallback.
+        """
+        history = object.__getattribute__(self, "history")
+        if name in history:
+            return history[name]
+        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
+
+    # def __getattribute__(self, name: str):
+    #     """
+    #     First try normal attribute lookup.
+    #     If that fails, look in `self.history` and return a stored snapshot.
+    #     If still not found, raise AttributeError as usual.
+    #     """
+    #     try:
+    #         # Normal attribute resolution (including dataclass fields)
+    #         return object.__getattribute__(self, name)
+    #     except AttributeError:
+    #         # Fallback to history dict if present
+    #         history = object.__getattribute__(self, "history")
+    #         if name in history:
+    #             return history[name]
+    #         # Nothing found → re-raise the normal error
+    #         raise
 
     # def __post_init__(self):
     #     # mark that init is done; future setattr calls will be logged
@@ -218,7 +251,7 @@ def run_pipeline(ctx, steps: List[Callable[[Any], Any]]):
 
 def step_rpe_downsample_and_preprocess(ctx: RPEContext) -> RPEContext:
     ctx.img = ctx.original_image.copy()
-    print(f"the shape of img coming in is {ctx.img.shape}")
+    # print(f"the shape of img coming in is {ctx.img.shape}")
 
     d_vertical = ctx.cfg.downsample_factor
     ctx.d_vertical = float(d_vertical)
@@ -232,7 +265,7 @@ def step_rpe_downsample_and_preprocess(ctx: RPEContext) -> RPEContext:
             fy=1.0 / ctx.d_vertical,
         )
 
-    print(f"the shape of img after resize is {ctx.img.shape}")
+    # print(f"the shape of img after resize is {ctx.img.shape}")
     ctx.img = ctx.img.astype(np.float32)
     ctx.img = gaussian_filter(ctx.img, sigma=5)
 
@@ -285,6 +318,54 @@ def step_rpe_seed_selection(ctx: RPEContext) -> RPEContext:
     mask[:, ::ctx.cfg.seed_every] = True
     seeds &= mask
 
+    ctx.seeds = seeds
+    return ctx
+
+def step_rpe_recalculate_single_seeded_and_reseed(ctx:RPEContext) -> RPEContext:
+    """ a new function that calculates dense seeds, then recalculates the peak_suppressed imge, and then calculates the typical looser seeds.
+    This can be modified perhaps by insead of implementing the full recalulation with imputation of enh_f, maybe a softer version of the suppression
+    """
+
+    seeds = suf._nms_columnwise(
+        ctx.peak_suppressed, # These params live here for now, but if I tune them later, they should move up into config
+        radius=25,
+        thresh=0.08,
+        vertical_filter=2,
+        keeptop=False,
+    )
+
+    mask = np.zeros_like(seeds, dtype=bool)
+    mask[:, :] = True
+    seeds &= mask
+
+    ctx.seeds = seeds
+
+    ctx.log_history('original_peak_suppressed', ctx.peak_suppressed.copy())
+    pre_suppressed_recalculated = suf.recalculate_single_seeded_cols(ctx.seeds,ctx.peak_suppressed,ctx.enh_f)
+    ctx.log_history('pre_suppressed_recalculated',pre_suppressed_recalculated)
+    ctx.peak_suppressed = suf.peakSuppressor.peak_suppression_pipeline(
+        pre_suppressed_recalculated,
+        pre_suppressed_recalculated,
+        ctx.ilm_seg,
+        suppression_factor=0,
+        third_peak_margin=30,
+    )
+
+    # ctx.peak_suppressed = suf.peakSuppressor(ctx.seeds,ctx.peak_suppressed,ctx.enh_f)
+
+    seeds = suf._nms_columnwise(
+        ctx.peak_suppressed, # These params live here for now, but if I tune them later, they should move up into config
+        radius=25,
+        thresh=0.08,
+        vertical_filter=2,
+        keeptop=False,
+    )
+
+    mask = np.zeros_like(seeds, dtype=bool)
+    mask[:, ::ctx.cfg.seed_every] = True
+    seeds &= mask
+
+    ctx.log_history('original_seeds' , ctx.seeds.copy())
     ctx.seeds = seeds
     return ctx
 
@@ -361,7 +442,7 @@ def step_rpe_tube_smoother(ctx: RPEContext) -> RPEContext:
     ctx.guided_cost_tube_smoothed = guided_cost_tube_smoothed
     ctx.guided_cost_raw_tube_smoothed = guided_cost_raw_tube_smoothed
 
-    spu.save_image_exploration(ctx.img, rpe_guided_tube_smoothed, pickle_save=False) # won't actually run
+    # spu.save_image_exploration(ctx.img, rpe_guided_tube_smoothed, pickle_save=False) # won't actually run
     return ctx
 
 
@@ -404,7 +485,7 @@ def step_rpe_smooth_and_upsample(ctx: RPEContext) -> RPEContext:
 
 def step_ilm_downsample_and_preprocess(ctx: ILMContext) -> ILMContext:
     ctx.img = ctx.original_image.copy()
-    print(f"ILM: shape of img coming in is {ctx.img.shape}")
+    # print(f"ILM: shape of img coming in is {ctx.img.shape}")
 
     d_vertical = ctx.cfg.horizontal_factor   # preserve your original semantics
     d_horizontal = ctx.cfg.vertical_factor
@@ -423,7 +504,7 @@ def step_ilm_downsample_and_preprocess(ctx: ILMContext) -> ILMContext:
     downsampled_img = ctx.img.astype(np.float32)
     ctx.img = gaussian_filter(downsampled_img, sigma=5)
 
-    print(f"ILM: shape of img after resize is {ctx.img.shape}")
+    # print(f"ILM: shape of img after resize is {ctx.img.shape}")
     return ctx
 
 

@@ -337,15 +337,6 @@ def build_3d_annotation_masks(
     else:
         raise ValueError(f"Unexpected image ndim={data.ndim}; expected 3 or 4.")
 
-    # ---- Build 2D masks in (Z,X) ----
-    # onh_zx = None
-    # if onh_layer is not None and len(onh_layer.data) > 0:
-    #     v = np.asarray(onh_layer.data[0], dtype=float)  # (N,3) as (Z,Y,X) vertices
-    #     if v.shape[1] >= 3:
-    #         v_zx = v[:, [0, 2]]                         # drop Y → (Z,X)
-    #         onh_zx = polygon2mask((Z, W), v_zx).astype(np.uint8)  # (Z,W), 1 inside
-    #     # else: leave as None
-
     import termplotlib as tpl
     onh_zx = None
     if onh_layer is not None and len(onh_layer.data) > 0:

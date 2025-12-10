@@ -1,15 +1,12 @@
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # adds Han_AIR/ to path
+sys.path.append(str(Path(__file__).resolve().parents[2]))  # adds Han_AIR/ to path
 import file_utils as fu
 import numpy as np
 from datetime import date
-
-import segmentation_utils as su
-from segmentation_scratch.paper_canny_2022 import RpeDebug
-# import segmentation_scratch.latest_segmentation_functions as lsf
-# import segmentation_scratch.seg_runner as experimental_seg_fns
-import segmentation_scratch.latest_segmentation_functions as lsf
+import code_files.segmentation_code.segmentation_pipelines as sp
+from code_files.segmentation_code.segmentation_step_functions import RPEContext
 from concurrent.futures import ProcessPoolExecutor
 from collections import defaultdict
 from dataclasses import asdict
@@ -48,16 +45,19 @@ def process_volume(vol_fp):
 
     with ProcessPoolExecutor(max_workers=12) as exe:
         futures = [
-            exe.submit(lsf.worker_process_bscan_layers, (idx, vol[idx, :, :],ONH_info[idx,:,:]), 1.5)
+            # exe.submit(lsf.worker_process_bscan_layers, (idx, vol[idx, :, :],ONH_info[idx,:,:]), 1.5)
+            exe.submit(sp.process_bscan_12_6_25, (idx, vol[idx, :, :],ONH_info[idx,:,:]))
             for idx in range(vol.shape[0])
+            # for idx in range(14)
         ]
         # collect results and sort by bscan_idx
         results = [fut.result() for fut in futures]
-        for bscan_idx, dbg_ilm,dbg_rpe in sorted(results, key=lambda x: x[0]):
-            dbg_out = RpeDebug(rpe_raw=dbg_rpe.rpe_raw,rpe_smooth=dbg_rpe.rpe_smooth, ilm_raw=dbg_ilm.ilm_raw, ilm_smooth=dbg_ilm.ilm_smooth)
+        # for bscan_idx, dbg_ilm,dbg_rpe in sorted(results, key=lambda x: x[0]):
+        for bscan_idx, out_dict in sorted(results, key=lambda x: x[0]):
+            # dbg_out = RpeDebug(rpe_raw=dbg_rpe.rpe_raw,rpe_smooth=dbg_rpe.rpe_smooth, ilm_raw=dbg_ilm.ilm_raw, ilm_smooth=dbg_ilm.ilm_smooth)
+            # dbg_out = {'rpe_raw':dbg_rpe.rpe_raw,'rpe_smooth':dbg_rpe.rpe_smooth, 'ilm_raw':dbg_ilm.ilm_raw, 'ilm_smooth':dbg_ilm.ilm_smooth}
             # dbg_out = uncompress_layers_inplace(dbg_out)
-            key = f'bscan{bscan_idx}'
-            layers_dict[key] = dbg_out
+            layers_dict[f'bscan{bscan_idx}'] = out_dict
 
     stacked_layers = collate_layers(layers_dict)
 
@@ -91,10 +91,12 @@ def collate_layers(layers_dict):
 
     # 2) Iterate in sorted b-scan order to keep slice axis consistent
     for key in sorted(layers_dict.keys(), key=lambda k: int(k.replace('bscan',''))):
-        dbg: RpeDebug = layers_dict[key]
+        # dbg: RpeDebug = layers_dict[key]
+        out_dict = layers_dict[key]
         
         # asdict gives you a normal dict of { field_name: value_array }
-        for field_name, arr in asdict(dbg).items():
+        # for field_name, arr in asdict(dbg).items():
+        for field_name, arr in out_dict.items():
             # skip any that are None (if you made fields optional)
             if arr is None:  
                 continue
@@ -139,5 +141,5 @@ def batch_process_dir(
 
 
 if __name__ == '__main__':
-    # batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_all_volumes_extra_mini/',file_ext='.npy')
-    batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_all_volumes/',file_ext='.img')
+    # batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_all_volumes/',file_ext='.img')
+    batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_volumes_mini/',file_ext='.npy')

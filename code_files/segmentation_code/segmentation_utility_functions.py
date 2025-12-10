@@ -847,3 +847,9 @@ def upsample_path(path_ds, vertical_factor = None, horizontal_factor=None, origi
 
     return path_orig
 
+def recalculate_single_seeded_cols(seeds_image,peak_suppressed_image,enh_image):
+    """identifies the columns"""
+    cols_to_recalculate = np.sum(seeds_image,axis=0)==1
+    peak_suppressed_recalculated = peak_suppressed_image.copy()
+    peak_suppressed_recalculated[:,cols_to_recalculate] = enh_image[:,cols_to_recalculate]
+    return peak_suppressed_recalculated

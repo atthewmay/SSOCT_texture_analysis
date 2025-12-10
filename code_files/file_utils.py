@@ -61,8 +61,6 @@ def image_to_annotation_path(img_path: Path, ann_root: Path=None) -> Path:
 
     
         
-
-
 def curves_to_label_vol(
     layers: dict[str, np.ndarray],
     image_height: int = 1536,
@@ -157,31 +155,6 @@ def extract_eye_side(filename):
     if match:
         return match.group(1)
     return None
-
-# def crawl_dirs(root_dir, function_to_execute):
-#     """will crawl my main data directory structure which is like data/category (e.g. AIR)/patient dir/images.img etc"""
-#     # Collect all category subdirectories
-#     categories = sorted([
-#         d for d in os.listdir(root_dir)
-#         if os.path.isdir(os.path.join(root_dir, d))
-#     ])
-
-#     integer_id = 1
-#     rows = []
-
-#     for category in categories:
-#         cat_path = os.path.join(root_dir, category)
-
-#         # Collect patient directories in this category
-#         patient_dirs = sorted([
-#             d for d in os.listdir(cat_path)
-#             if os.path.isdir(os.path.join(cat_path, d))
-#         ])
-
-#         for patient in patient_dirs:
-#             for fname in os.listdir(os.path.join(cat_path,patient)):
-#                 file_path = os.path.join(cat_path,patient,fname)
-#                 function_to_execute(file_path)
 
 # The below was gpt garbage for initial exploration
 # 1) configure known image specs: suffix → (shape, dtype)
@@ -426,4 +399,5 @@ def guess_and_plot_brute(
         plt.show()
 
     return {"2d": candidates_2d, "3d": candidates_3d}
+
 
