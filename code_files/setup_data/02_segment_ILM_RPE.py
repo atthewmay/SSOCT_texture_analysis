@@ -1,135 +1,224 @@
-import sys
+
+#!/usr/bin/env python3
+import sys, math
 from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parents[1]))  # adds Han_AIR/ to path
-sys.path.append(str(Path(__file__).resolve().parents[2]))  # adds Han_AIR/ to path
-import file_utils as fu
-import numpy as np
-from datetime import date
-import code_files.segmentation_code.segmentation_pipelines as sp
-from code_files.segmentation_code.segmentation_step_functions import RPEContext
+from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
-from collections import defaultdict
-from dataclasses import asdict
+
+import numpy as np
 import dask.array as da
-import math
 
-def subsample_volume(volume,smaller_zdim):
-    """used to correct the spacing of slices in ONH info"""
-    step_size = int(math.ceil(volume.shape[0]/smaller_zdim))
-    volume_out = volume[np.arange(0,volume.shape[0],step_size)]
-    return volume_out
+# --- project path ---
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-def process_volume(vol_fp,annotation_root):
-    """input the volume fp bc now we have to load the onh annotations as well
-    process a single volume and pull the ilm and rpe, which will be saved to surfaces"""
-    layers_dict = {}
-
-    vol = fu.load_ss_volume2(vol_fp,mmap=True) # should be fast and memory light?
-    annotation_root = Path(annotation_root)
-    annotation_path = fu.image_to_annotation_path(vol_fp,annotation_root)
-    ONH_info = da.from_zarr(annotation_path) # should be fast and memory light?)
-    # if step_size == 1:
-    if ONH_info.shape != vol.shape:
-        print(f"our ONH_info shape = {ONH_info.shape} and our volume shape = {vol.shape}. Will be subsampling")
-        ONH_info = subsample_volume(ONH_info,vol.shape[0])
-
-    with ProcessPoolExecutor(max_workers=12) as exe:
-        futures = [
-            # exe.submit(lsf.worker_process_bscan_layers, (idx, vol[idx, :, :],ONH_info[idx,:,:]), 1.5)
-            exe.submit(sp.process_bscan_12_6_25, (idx, vol[idx, :, :],ONH_info[idx,:,:]))
-            for idx in range(vol.shape[0])
-            # for idx in range(14)
-        ]
-        # collect results and sort by bscan_idx
-        results = [fut.result() for fut in futures]
-        # for bscan_idx, dbg_ilm,dbg_rpe in sorted(results, key=lambda x: x[0]):
-        for bscan_idx, out_dict in sorted(results, key=lambda x: x[0]):
-            layers_dict[f'bscan{bscan_idx}'] = out_dict
-
-    stacked_layers = collate_layers(layers_dict)
-
-    return stacked_layers
+import file_utils as fu
+import code_files.segmentation_code.segmentation_pipelines as sp
 
 
+# ---------------------------- lite extraction ----------------------------
 
-def collate_layers(layers_dict):
+def extract_lite(ilm_ctx, rpe_ctx):
+    """Return lightweight dict: 1D lines + a few small attrs (no big images)."""
+    hp = rpe_ctx.hypersmoother_params
+
+    hr = getattr(rpe_ctx, "highres_ctx", None)
+
+    d = {
+        # ---- final-ish lines you want stackable ----
+        "hypersmoother_path": hp.hypersmoother_path,
+        "rpe_raw": rpe_ctx.rpe_raw,
+        "rpe_smooth": rpe_ctx.rpe_smooth,
+        "ilm_smooth": ilm_ctx.ilm_smooth,
+
+        # ---- optional refined lines ----
+        "rpe_refined1": hr.rpe_refined,
+        "rpe_refined2": hr.rpe_refined2,
+
+        # ---- light params ----
+        # keep shift if you want resume/unsmooth later
+        "hypersmoother_target_y": hp.hypersmoother_target_y,
+        "hypersmoother_shift_y_full": hp.hypersmoother_shift_y_full,
+        "hypersmoother_target_y":hp.hypersmoother_target_y,
+
+        "highres_smoother_shift_y_full":hp.highres_smoother_shift_y_full,
+        "highres_smoother_target_y":hp.highres_smoother_target_y,
+
+    }
+    return d
+
+
+def _save_npz(path, d):
+    # np.savez_compressed doesn't like None -> drop them
+    np.savez_compressed(path, **{k: v for k, v in d.items() if v is not None})
+
+
+def collate_stackable(slice_dicts, keys):
     """
-    layers_dict: { 'bscan0': RpeDebug, 'bscan1': RpeDebug, ... }
-    
-    Returns a dict mapping each RpeDebug field name to a stacked array
-    of shape (n_slices, width).
+    slice_dicts: list of (z, dict) in increasing z
+    keys: which keys to try stacking into (n_slices, W)
     """
-    # 1) Prepare empty lists for each field
-    field_lists = defaultdict(list)  
+    zs = [z for z, _ in slice_dicts]
+    out = {"z": np.asarray(zs, dtype=np.int32)}
 
-    # 2) Iterate in sorted b-scan order to keep slice axis consistent
-    for key in sorted(layers_dict.keys(), key=lambda k: int(k.replace('bscan',''))):
-        # dbg: RpeDebug = layers_dict[key]
-        out_dict = layers_dict[key]
-        
-        # asdict gives you a normal dict of { field_name: value_array }
-        # for field_name, arr in asdict(dbg).items():
-        for field_name, arr in out_dict.items():
-            # skip any that are None (if you made fields optional)
-            if arr is None:  
+    # pick reference width Wref from first available 1D array among keys
+    Wref = None
+    for _, d in slice_dicts:
+        for k in keys:
+            a = d.get(k, None)
+            if a is not None:
+                a = np.asarray(a)
+                if a.ndim == 1:
+                    Wref = int(a.shape[0])
+                    break
+        if Wref is not None:
+            break
+
+    for k in keys:
+        arrs = []
+        for _, d in slice_dicts:
+            a = d.get(k, None)
+            if a is None:
                 continue
-            field_lists[field_name].append(arr)
+            a = np.asarray(a)
+            if a.ndim == 1 and a.shape[0] == Wref:
+                arrs.append(a)
+        if arrs:
+            out[k] = np.stack(arrs, axis=0)
 
-    # 3) Stack each list into one 2D array (slices × width)
-    stacked = {}
-    for field_name, list_of_arr in field_lists.items():
-        # ensure every arr in list_of_arr has the same shape
-        stacked[field_name] = np.stack(list_of_arr, axis=0)
-
-    return stacked
-
-def batch_process_dir(
-    dir_path: str,
-    file_ext: str = '.npy',
-    annotation_root = None,
-    output_dir_suffix: str = f"_layers_{date.today().strftime('%Y-%m-%d')}",
-):
-    """
-    Walk `dir_path`, process every file ending in `file_ext` as a volume,
-    and save a `{stem}_rpe.npy` array of shape (N_slices, W).
-    """
-    dir_path = Path(dir_path)
-
-    for vol_path in sorted(dir_path.glob(f'*{file_ext}')):
-        print(f"Processing {vol_path.name}…", end=' ', flush=True)
-        stacked_layers = process_volume(vol_path,annotation_root)
-        # Save name and process
-        vol_dir = vol_path.parent
-        vol_name = vol_path.with_suffix('').name
-        processed_dir = vol_dir.with_name(vol_dir.name.strip("_mini") + output_dir_suffix)
-        processed_dir.mkdir(parents=True,exist_ok=True)
-        out_path = processed_dir / f"{vol_name}_layers"
-        np.savez_compressed(out_path, **stacked_layers)
-
-        print("done →", out_path.name)
+    return out
 
 
-if __name__ == '__main__':
+# ---------------------------- IO helpers ----------------------------
+
+def load_vol_and_onh(vol_fp):
+    vol_fp = Path(vol_fp)
+    vol = fu.load_ss_volume2(vol_fp, mmap=True)
+
+    onh_path = fu.image_to_annotation_path(vol_fp)
+    onh = da.from_zarr(onh_path)
+    # if onh.shape != vol.shape:
+    #     onh = subsample_volume(onh, vol.shape[0])
+    return vol, onh
+
+
+def build_work(vol, onh, z_idx, vol_id):
+    work = []
+    for k, z in enumerate(z_idx):
+        bscan = vol[z, :, :]
+        onh_z = onh[z, :, :][...]
+        work.append((k, bscan, onh_z, f"{vol_id}_z:{int(z)}"))
+    return work
+
+
+# ---------------------------- main processing ----------------------------
+
+def process_volume_lite(vol_fp, *, z_step=1, max_workers=8, rpe_steps=None, out_dir=None):
+    vol_fp = Path(vol_fp)
+    vol_id = vol_fp.with_suffix("").name
+
+    vol, onh = load_vol_and_onh(vol_fp)
+
+    z_idx = np.arange(0, vol.shape[0], int(z_step))
+    work = build_work(vol, onh, z_idx, vol_id)
+
+    vol_out = Path(out_dir) / vol_id
+    vol_out.mkdir(parents=True, exist_ok=True)
+
+    fn = sp.process_bscan_1_3_26  # must return (idx, ilm_ctx, rpe_ctx) when production_mode=False
+
+    if max_workers <= 1:
+        results = [fn(t, False, rpe_steps) for t in work]
+    else:
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futs = [ex.submit(fn, t, False, rpe_steps) for t in work]
+            results = [f.result() for f in futs]
+
+    results.sort(key=lambda x: x[0])
+
+    slice_dicts = []
+    for k, ilm_ctx, rpe_ctx, work_id in results:
+        z = int(z_idx[k])
+        d = extract_lite(ilm_ctx, rpe_ctx)
+
+        _save_npz(vol_out / f"z{z:04d}.npz", d)
+        slice_dicts.append((z, d))
+
+    STACK_KEYS = [
+        "hypersmoother_path",
+        "rpe_raw",
+        "rpe_smooth",
+        "ilm_smooth",
+        "rpe_refined1",
+        "rpe_refined2",
+        # add "rpe_smooth2" if you create it later
+    ]
+    stacked = collate_stackable(slice_dicts, STACK_KEYS)
+    np.savez_compressed(vol_out / f"{vol_id}_stacked.npz", **stacked)
+
+    return vol_out
+
+
+def batch_process_dir_lite(volumes_root, *, pattern="*.npy",
+                           z_step=1, max_workers=8, rpe_steps=None,
+                           outputs_root=None):
+    volumes_root = Path(volumes_root)
+
+    if outputs_root is None:
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        outputs_root = Path("segmentation_outputs") / run_id
+    outputs_root = Path(outputs_root)
+    outputs_root.mkdir(parents=True, exist_ok=True)
+
+    for vol_path in sorted(volumes_root.glob(pattern)):
+        print("Processing", vol_path.name, flush=True)
+        out = process_volume_lite(
+            vol_path, 
+            z_step=z_step, max_workers=max_workers,
+            rpe_steps=rpe_steps, out_dir=outputs_root
+        )
+        print("saved ->", out)
+
+    print("DONE. outputs_root =", outputs_root)
+    return outputs_root
+
+
+# ---------------------------- CLI ----------------------------
+
+if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(
-        description="Your script description here."
-    )
-
-    parser.add_argument(
-        "--annotation_root",
-        type=str,
-        default = "/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations",
-        # required=True,
-        help="Path to the input volume or data directory."
-    )
-
-    parser.add_argument(
-        "--volumes_root",
-        type=str,
-        default='/Users/matthewhunt/Research/Iowa_Research/test_han_air_repo/SSOCT_texture_analysis/data/data_volumes_mini/',
-        help="Directory where outputs will be saved."
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--volumes_root", type=str)
+    parser.add_argument("--pattern", type=str, default=".img")
+    parser.add_argument("--z_step", type=int, default=1)
+    parser.add_argument("--max_workers", type=int, default=8)
+    parser.add_argument("--outputs_root", type=str)
     args = parser.parse_args()
 
-    # batch_process_dir(dir_path='/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_all_volumes/',file_ext='.img')
-    batch_process_dir(dir_path=args.volumes_root,file_ext='.npy',annotation_root=args.annotation_root)
+    STEPS = sp.RPE_STEPS_1_25_26  # swap to your desired list
+
+    batch_process_dir_lite(
+        args.volumes_root,
+        pattern=args.pattern,
+        z_step=args.z_step,
+        max_workers=args.max_workers,
+        rpe_steps=STEPS,
+        outputs_root=args.outputs_root,
+    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

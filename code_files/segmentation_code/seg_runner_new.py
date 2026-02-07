@@ -9,7 +9,6 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 import numpy as np
-import cv2
 import file_utils as fu
 # print(sys.path)
 
@@ -38,12 +37,12 @@ def pick_consistent_indices(n: int, k: int, key: str, seed: int = 42) -> np.ndar
     k = min(k, n)
     return rs.choice(n, size=k, replace=False)
 
-def image_to_annotation_path(img_path: Path, ann_root: Path=None) -> Path:
-    if ann_root is None:
-        ann_root = Path("/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations")
-    cand1 = ann_root / img_path.with_suffix(".labels.zarr").name
-    cand2 = ann_root / img_path.with_suffix(".zarr").name
-    return cand1 if cand1.exists() else cand2
+# def image_to_annotation_path(img_path: Path, ann_root: Path=None) -> Path:
+#     if ann_root is None:
+#         ann_root = Path("/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations")
+#     cand1 = ann_root / img_path.with_suffix(".labels.zarr").name
+#     cand2 = ann_root / img_path.with_suffix(".zarr").name
+#     return cand1 if cand1.exists() else cand2
 
 def load_extra_slices(images_root: Path, total_k: int,golden_set_dict = None) -> list[np.ndarray]:
     """Used to use the mini_root, but don't need this w/ very fast loading from zarr.
@@ -64,7 +63,7 @@ def load_extra_slices(images_root: Path, total_k: int,golden_set_dict = None) ->
         try:
             annotation_root = Path("/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations")
             # annotation_path = annotation_root / fp.with_suffix('.zarr').name
-            annotation_path = image_to_annotation_path(fp,annotation_root)
+            annotation_path = fu.image_to_annotation_path(fp)
             # import pdb; pdb.set_trace()
             ONH_info = fu.load_ss_volume2(annotation_path,mmap=True) # should be fast and memory light?)
         except:
@@ -103,7 +102,7 @@ def load_golden_set_layers(golden_dict,stem_idx_order_combos,layers_root: Path=N
 
 def load_extra_slices_and_prior_layers(golden_set_dict,
                                        images_root: Path,
-                                       layers_root: Path = Path('/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_all_volumes_layers_08_23_25/')):
+                                       layers_root: Path = Path('/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_all_volumes_layers_08_23_25/')):
     """unifying the above functions as a better refactor. """
     vols = sorted(images_root.rglob('*.img'))
     slices = []
@@ -114,7 +113,7 @@ def load_extra_slices_and_prior_layers(golden_set_dict,
         layer_volume = fu.load_layers(Path(layers_root)/f"{fp.stem}_layers.npz")
 
         annotation_root = Path("/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations")
-        annotation_path = image_to_annotation_path(fp,annotation_root)
+        annotation_path = fu.image_to_annotation_path(fp)
         ONH_info = da.from_zarr(annotation_path) # should be fast and memory light?)
 
         z_idxs = golden_set_dict[fp.stem] # A dictionary 
@@ -224,21 +223,24 @@ def main():
     # Load current (first) slice — always page 1
     print(f"img vol lives at path: {args.img_src_path}")
     current = np.load(args.current_bscan)
-    onh_info_path = image_to_annotation_path(Path(args.img_src_path))
+    filename = Path(args.img_src_path).stem
+    work_id = filename+"_idx:"+str(args.z_index)
+
+    onh_info_path = fu.image_to_annotation_path(Path(args.img_src_path))
     try:
         current_onh_info = grab_current_onh_info(onh_info_path,args.z_index)
         print(f"onh_info vol lives at path: {onh_info_path}")
     except:
         print(f"unable to load ONH info at {onh_info_path}")
         current_onh_info = None
-    current = (current,current_onh_info)
+    current = (current,current_onh_info,work_id)
 
     # Load ~k additional sample slices from mini volumes deterministically
     # samples = load_mini_slices(args.mini_root, total_k=0)
 
     # Build processing queue: first item is the current slice (index 0), then samples (1..k)
     # work = [(0, current)] + [(i + 1, s) for i, s in enumerate(samples)]
-    if args.run_extra_slices:
+    if args.run_extra_slices: # will need to fix the work_id portion
         import yaml
         with open("/Users/matthewhunt/Research/Iowa_Research/Han_AIR/code_files/segmentation_scratch/golden_set.yaml", "r") as f:
             golden_dict = yaml.safe_load(f)
@@ -254,24 +256,31 @@ def main():
         work = [(0, current[0], current[1])] + [(i + 1, s, onh) for i, (s, onh) in enumerate(samples)]
     else:
         print("skipping the following other samples")
-        work = [(0, current[0],current[1])]
+        work = [(0, current[0],current[1],current[2])]
         golden_set_layers = None
 
 
 
+    segmentation_function = sp.process_bscan_1_3_26
+    # segmentation_steps = sp.RPE_STEPS_1_14_26
+    segmentation_steps = sp.RPE_STEPS_1_25_26
     if args.debug or args.max_workers <= 1:
         # Serial, pdb-friendly path
-        results = [sp.process_bscan_12_6_25(t) for t in work]
+        results = [segmentation_function(t,False,segmentation_steps) for t in work]
     else:
         from concurrent.futures import ProcessPoolExecutor
         with ProcessPoolExecutor(max_workers=args.max_workers) as exe:
-            futures = [exe.submit(sp.process_bscan_12_6_25, t) for t in work]
+            futures = [exe.submit(segmentation_function, t,False,segmentation_steps) for t in work] # Setting production mode to false
             results = [f.result() for f in futures]
 
     # Sort by the artificial order index (so page 1 is the current slice)
     results.sort(key=lambda x: x[0])
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    spu.save_results_in_PDF(results,args.out)
+
 
     
+    """
     if golden_set_layers:
         diffs_from_original = golden_set_differences(results[1:],golden_set_layers)
         print(f"diffs_from_original={diffs_from_original}")
@@ -290,8 +299,10 @@ def main():
             # title = 'Current slice' if order_idx == 0 else f'Sample slice #{order_idx}'
             title = 'Current slice' if order_idx == 0 else f'Sample slice MAD from original = {diffs_from_original}'
             original_line = None if i==0 else golden_set_layers[i-1] 
-            render_page(pdf, title, dbg_ilm, dbg_rpe,original_line)
-            relevant_results.append([order_idx,dbg_ilm.ilm_smooth,dbg_rpe.enh])
+            # render_page(pdf, title, dbg_ilm, dbg_rpe,original_line)
+            # spu.render_PDF_page(pdf, title, dbg_ilm, dbg_rpe,original_line=None)
+            spu.render_PDF_page_ArrayBoard(pdf, title, ctx_ilm=dbg_ilm, ctx_rpe=dbg_rpe)
+            # relevant_results.append([order_idx,dbg_ilm.ilm_smooth,dbg_rpe.enh])
     
     # import pickle
     # print("going to pickle the entire results")
@@ -305,7 +316,7 @@ def main():
         spu.clean_sweep_pdfs()
     except Exception:
         pass
-
+    """
 
 if __name__ == '__main__':
     main()

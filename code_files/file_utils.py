@@ -7,6 +7,17 @@ from pathlib import Path
 import re
 from dask import array as da
 
+
+def load_constants():
+    """Loads my constants dict"""
+    import yaml
+    constants_path = "/Users/matthewhunt/Research/Iowa_Research/Han_AIR/code_files/CONSTANTS.yaml"
+    CONSTANTS_dict = yaml.safe_load(open(constants_path, "r"))
+    return CONSTANTS_dict
+
+C = load_constants()
+
+
 def load_ss_volume(fp):
     """loads a direct file from numpy if possible too now. Defaults to the shape of 1024 slices, 1536 tall, 512 wide
     """
@@ -54,18 +65,32 @@ def downsample_layers(layers,xyz_step=(1,1,1)):
 
 def image_to_annotation_path(img_path: Path, ann_root: Path=None) -> Path:
     if ann_root is None:
-        ann_root = Path("/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations")
+        ann_root = Path(C['annotation_root'])
+    else:
+        raise Exception # Should now be none, catch any unchanged occurances
     cand1 = ann_root / img_path.with_suffix(".labels.zarr").name
     cand2 = ann_root / img_path.with_suffix(".zarr").name
     return cand1 if cand1.exists() else cand2
 
+
+def load_vol_and_annotation(vol_path,annotation_root = "/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations"):
+    """loads the volume adn the ONH info and returns both"""
+    vol = load_ss_volume2(vol_path,mmap=True) # should be fast and memory light?
+    annotation_root = Path(annotation_root)
+    annotation_path = image_to_annotation_path(vol_path)
+    ONH_info = da.from_zarr(annotation_path) # should be fast and memory light?)
+    return vol,ONH_info
+
     
         
-def curves_to_label_vol(
+def curves_to_label_vol( # MAY NEED REWRITING. 
     layers: dict[str, np.ndarray],
     image_height: int = 1536,
     vert_dilation_size: int = 0,   # interpreted as half-thickness (k); total = 2k+1
     names_to_use = ['rpe_raw','rpe_smooth','ilm_raw','ilm_smooth']
+    
+
+
 ) -> np.ndarray:
     """
     layers: dict of {name: (Z, W) curves} with finite Y (row) coords in [0, H-1]
@@ -73,6 +98,13 @@ def curves_to_label_vol(
     vert_dilation_size: half-thickness in pixels; 0 => 1-pixel line
     """
     # Shapes
+    # layers = {k: npz[k] for k in npz.files if k != "key"}   # everything else as a real dict
+    d = {}
+    for k in layers.files:
+        if k != "z":
+            d[k] = layers[k]
+    layers = d
+
     Z, W = next(iter(layers.values())).shape
     H = int(image_height)
 
@@ -92,6 +124,7 @@ def curves_to_label_vol(
     k = int(vert_dilation_size)
     offsets = np.arange(-k, k + 1, dtype=np.int32)      # (2k+1,)
 
+    li = 1
     for li, (key,curve) in enumerate(layers.items(), start=1):
         # sanitize Y centers
         if key not in names_to_use:
@@ -117,7 +150,8 @@ def curves_to_label_vol(
             # write only into background (keep_existing semantics)
             empty = (lbl_flat[idx] == 0)
             if empty.any():
-                lbl_flat[idx[empty]] = li + 2
+                lbl_flat[idx[empty]] = li 
+        li += 1
 
     return lbl
 
@@ -131,6 +165,16 @@ def get_corresponding_layer_path(vol_path,file_suffix = '.npy', dir_suffix = "_p
     # e.g. "data" + "_layers" + ".npy" → "data_layers.npy"
 
     return processed_dir / new_filename
+
+def new_get_corresponding_layer_path(vol_path,dir_suffix):
+    """The new jan 2026 way of doing this is nested layer output results under just a different name from teh volume path"""
+    vol_dir = vol_path.parent
+    layer_output_root = vol_dir.with_name(vol_dir.name.strip("_mini").strip("_full") + dir_suffix)
+    layer_output_dir = layer_output_root / vol_path.stem
+    npz_stacked_filename = f"{vol_path.stem}_stacked.npz"
+    return layer_output_dir / npz_stacked_filename
+
+
 
 def load_layers(layer_path,use_mini=False):
     '''loads the layers directly and will adjust as needed for mini, assuming a 1/20 z-stack used'''
@@ -401,3 +445,59 @@ def guess_and_plot_brute(
     return {"2d": candidates_2d, "3d": candidates_3d}
 
 
+
+#2/2/26
+def load_work_from_yaml(yaml_path,headings,images_root=C['images_root']):
+    """go from the (image name : slice) pair to the work format of (index, image, onh_info)"""
+    import yaml
+    cfg = yaml.safe_load(open(yaml_path, "r"))
+    items = {}
+    for heading in headings:
+        heading_items = cfg[heading]  # dict: image_key -> [slice0, slice1] (or whatever you store)
+        items.update(heading_items)
+    work = []
+    work_idx = 0
+    for filename,slices in items.items():
+        fp = Path(images_root)/f"{filename}.img"
+        vol = load_ss_volume2(fp,mmap=True) # should be fast and memory light?
+        annotation_path = image_to_annotation_path(fp)
+        ONH_info = da.from_zarr(annotation_path) # should be fast and memory light?)
+        for slice_idx in slices:
+            if type(slice_idx) == list:
+                assert len(slice_idx)==2
+                slice_idx = slice_idx[0] * slice_idx[1] # permitting a conversion factor for different slice indices
+            else: 
+                assert type(slice_idx) == int
+
+            work_id = filename+"_idx:"+str(slice_idx)
+            fp = Path(images_root)/filename
+            slice = vol[slice_idx, :, :]
+            ONH_info_slice = ONH_info[slice_idx,:,:][...]
+            work.append([work_idx,slice,ONH_info_slice,work_id])
+            work_idx += 1 
+    return work
+
+
+# from __future__ import annotations
+# from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+# from typing import Callable, Iterable, TypeVar, List, Literal, Optional
+
+# T = TypeVar("T")
+# R = TypeVar("R")
+
+# def parallel_map(
+#     fn: Callable[[T], R],
+#     items: Iterable[T],
+#     *,
+#     mode: Literal["process", "thread", "seq"] = "process",
+#     max_workers: Optional[int] = None,
+#     chunksize: int = 1,          # only used for process/thread via executor.map
+# ) -> List[R]:
+#     items = list(items)
+#     if mode == "seq" or len(items) <= 1:
+#         return [fn(x) for x in items]
+
+#     Executor = ProcessPoolExecutor if mode == "process" else ThreadPoolExecutor
+#     with Executor(max_workers=max_workers) as ex:
+#         # executor.map preserves input order
+#         return list(ex.map(fn, items, chunksize=chunksize))

@@ -18,6 +18,7 @@ main = sys.modules['__main__']
 if not hasattr(main, '__spec__'):
     main.__spec__ = importlib.util.spec_from_loader('__main__', loader=None)
 
+C = fu.load_constants()
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -100,6 +101,46 @@ def write_volume_to_zarr_streaming(vol_np: np.ndarray, zarr_path: Path, chunks: 
     zarr.consolidate_metadata(store)
     return zarr_path
 
+def write_labels_group_to_zarr_streaming(
+    vols: dict[str, np.ndarray],
+    zarr_path: Path,
+    chunks: tuple[int, int, int],
+):
+    """
+    vols: {name: (Z,H,W) uint8/uint16 label volumes}
+    writes to a zarr group at `zarr_path`, one dataset per key.
+    """
+    import zarr, numcodecs, numpy as np
+
+    compressor = numcodecs.Blosc(cname="lz4", clevel=3, shuffle=numcodecs.Blosc.BITSHUFFLE)
+
+    store = zarr.DirectoryStore(str(zarr_path))
+    root = zarr.open_group(store, mode="w")  # overwrite group
+
+    # Create datasets
+    for name, v in vols.items():
+        assert v.ndim == 3, (name, v.shape)
+        Z, H, W = v.shape
+        root.create_dataset( # Weird idk why
+            name,
+            shape=(Z, H, W),
+            chunks=chunks,
+            dtype=v.dtype,
+            compressor=compressor,
+            overwrite=True,
+        )
+
+    # Stream slice-by-slice in Z (bounded RAM)
+    # (Writes one Z-chunk per dataset per k)
+    any_vol = next(iter(vols.values()))
+    Z = any_vol.shape[0]
+    for k in range(Z):
+        for name, v in vols.items():
+            root[name][k, :, :] = v[k, :, :]
+
+    zarr.consolidate_metadata(store)
+    return zarr_path
+
 def ensure_image_zarr(vol_path: Path, z_stride: int,overwrite: bool) -> Path:
     """Create/reuse an image Zarr next to vol_path, thinning Z if requested."""
     zarr_path = vol_path.with_suffix(".zarr")
@@ -115,11 +156,15 @@ def ensure_image_zarr(vol_path: Path, z_stride: int,overwrite: bool) -> Path:
 
 def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,dir_suffix: str ) -> Path:
     """Create/reuse a labels Zarr from the *_layers.npz file aligned to vol_path.
-    if supplied a labels_dir"""
-    layer_path = fu.get_corresponding_layer_path(vol_path, file_suffix='_layers.npz', dir_suffix=dir_suffix)
+    if supplied a labels_dir
+    1/26/26: now accepting a zarr folder with subfoldersing during the refactorj
+    """
+    # layer_path = fu.get_corresponding_layer_path(vol_path, file_suffix='_layers.npz', dir_suffix=dir_suffix)
+    # layer_path = fu.get_corresponding_layer_path(vol_path, file_suffix='', dir_suffix=dir_suffix) # For january script, just keep name for simplicity
+    layer_path = fu.new_get_corresponding_layer_path(vol_path,dir_suffix=dir_suffix) # For january script, just keep name for simplicity
     if not layer_path.exists():
         raise FileNotFoundError(f"Layer file not found for {vol_path}: {layer_path}")
-    labels_zarr = layer_path.with_suffix(".zarr")
+    labels_zarr = layer_path.with_suffix(".zarr") # now a dir with group
 
     if not labels_zarr.exists() or overwrite == True:
         # Load image *shape* via memmap to get H,W without big RAM
@@ -129,20 +174,81 @@ def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,dir_suffix:
         layers = np.load(layer_path)                      # (Z, W, n_layers) dict-like npz or array
         layers = fu.downsample_layers(layers, (1, 1, 1))  # keep XY native for alignment
 
-        lbl_vol = fu.curves_to_label_vol(
-            layers,
-            image_height=H,
-            vert_dilation_size=3,
-            names_to_use=['ilm_smooth','rpe_smooth']
-        )
-        if z_stride > 1:
-            lbl_vol = lbl_vol[::z_stride]
+        # lbl_vol = fu.curves_to_label_vol(
+        #     layers,
+        #     image_height=H,
+        #     vert_dilation_size=1,
+        #     names_to_use= ['hypersmoother_path', 'rpe_raw', 'rpe_smooth', 'ilm_smooth', 'rpe_refined1', 'rpe_refined2']
+        #     #['ilm_smooth','rpe_smooth']
 
-        write_volume_to_zarr_streaming(lbl_vol.astype(np.uint8, copy=False), labels_zarr, (1, H, W))
+        # )
+        # if z_stride > 1:
+        #     lbl_vol = lbl_vol[::z_stride]
+
+        # write_volume_to_zarr_streaming(lbl_vol.astype(np.uint8, copy=False), labels_zarr, (1, H, W))
+
+
+        LABEL_SETS = {
+            "ilm_rpe_refined": ["ilm_smooth", "rpe_refined1", "rpe_refined2"],
+            "rpe_family":      ["rpe_raw", "rpe_smooth", "hypersmoother_path"],
+        }
+ 
+        vols = {}
+        for set_name, names in LABEL_SETS.items():
+            print(f"assigning names = {names} into the label-zarr being created")
+            v = fu.curves_to_label_vol(
+                layers,
+                image_height=H,
+                vert_dilation_size=1,
+                names_to_use=names,
+            )
+            if z_stride > 1:
+                v = v[::z_stride]
+            vols[set_name] = v.astype(np.uint8, copy=False)
+            print(f"np.unique(v,return_counts=True) = {np.unique(v,return_counts=True)}")
+ 
+        write_labels_group_to_zarr_streaming(vols, labels_zarr, chunks=(1, H, W))
+
         print(f"[build] labels → {labels_zarr}")
     else:
         print(f"[reuse] labels → {labels_zarr}")
     return labels_zarr
+
+
+# def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,dir_suffix: str ) -> Path:
+#     """Create/reuse a labels Zarr from the *_layers.npz file aligned to vol_path.
+#     if supplied a labels_dir"""
+#     # layer_path = fu.get_corresponding_layer_path(vol_path, file_suffix='_layers.npz', dir_suffix=dir_suffix)
+#     # layer_path = fu.get_corresponding_layer_path(vol_path, file_suffix='', dir_suffix=dir_suffix) # For january script, just keep name for simplicity
+#     layer_path = fu.new_get_corresponding_layer_path(vol_path,dir_suffix=dir_suffix) # For january script, just keep name for simplicity
+#     if not layer_path.exists():
+#         raise FileNotFoundError(f"Layer file not found for {vol_path}: {layer_path}")
+#     labels_zarr = layer_path.with_suffix(".zarr")
+
+#     if not labels_zarr.exists() or overwrite == True:
+#         # Load image *shape* via memmap to get H,W without big RAM
+#         vol_np = fu.load_ss_volume2(vol_path, z_step=1, y_step=1, x_step=1, mmap=True) #right, doesn't really load it
+#         H, W = vol_np.shape[1], vol_np.shape[2]
+
+#         layers = np.load(layer_path)                      # (Z, W, n_layers) dict-like npz or array
+#         layers = fu.downsample_layers(layers, (1, 1, 1))  # keep XY native for alignment
+
+#         lbl_vol = fu.curves_to_label_vol(
+#             layers,
+#             image_height=H,
+#             vert_dilation_size=1,
+#             names_to_use= ['hypersmoother_path', 'rpe_raw', 'rpe_smooth', 'ilm_smooth', 'rpe_refined1', 'rpe_refined2']
+#             #['ilm_smooth','rpe_smooth']
+
+#         )
+#         if z_stride > 1:
+#             lbl_vol = lbl_vol[::z_stride]
+
+#         write_volume_to_zarr_streaming(lbl_vol.astype(np.uint8, copy=False), labels_zarr, (1, H, W))
+#         print(f"[build] labels → {labels_zarr}")
+#     else:
+#         print(f"[reuse] labels → {labels_zarr}")
+#     return labels_zarr
 
 def ensure_image_flat_zarr(vol_path: Path, flatten_with: str, z_stride: int, overwrite: bool = False,dir_suffix: str = '_labels' ) -> Path:
     """
@@ -215,36 +321,59 @@ def load_one_volume(vp: Path, z_stride: int, overwrite: bool, flatten_with: str 
     # from dask import array as da
 
     # ensure raw caches
-    img_z = ensure_image_zarr(vp, z_stride, overwrite)
-    lbl_z = ensure_labels_zarr(vp, z_stride, OVERWRITE_LABELS,dir_suffix=dir_suffix)
+    img_z = ensure_image_zarr(vp, 1, overwrite) # Shoudl refactor to remove the zstride. 
+    # lbl_z = ensure_labels_zarr(vp, z_stride, OVERWRITE_LABELS,dir_suffix=dir_suffix) # force this to ahve a zstride of one I think?
+    lbl_z = ensure_labels_zarr(vp, 1, overwrite,dir_suffix=dir_suffix) # force this to ahve a zstride of one I think?
     img_raw = da.from_zarr(str(img_z))     # (Z,Y,X)
-    lbl_raw = da.from_zarr(str(lbl_z))
+    img_raw = img_raw[::z_stride]
+    # lbl_raw = da.from_zarr(str(lbl_z))
+
+    # labels are a zarr group: {set_name: (Z,Y,X)}
+    g = zarr.open_group(str(lbl_z), mode="r")
+    lbl_raw = {name: da.from_zarr(g[name]) for name in g.array_keys()}
 
 
-    annotation_path = Path('/Users/matthewhunt/Research/Iowa_Research/Han_AIR/testing_annotations') / vp.with_suffix('.labels.zarr').name 
+    # forcing z alighment if subsampled
+    # if img_raw.shape != lbl_raw.shape:
+    #     print('expecting a zstep mismatch, and thus downsampling the vol according to the passed arg')
+    #     img_raw = img_raw[::z_stride]
+    
+
+
+    annotation_path = Path('/Users/matthewhunt/Research/Iowa_Research/Han_AIR/annotations_dir/testing_annotations') / vp.with_suffix('.labels.zarr').name 
+    annotation_path = Path(C['annotation_root']) / vp.with_suffix('.labels.zarr').name 
     annotation_img = None
     if annotation_path.exists():
-        annotation_img = ensure_image_zarr(annotation_path, z_stride, overwrite=False) # overwrite hard-set to false bc you don't ever re-compute the annotations here! 
+        annotation_img = ensure_image_zarr(annotation_path, 1, overwrite=False) # overwrite hard-set to false bc you don't ever re-compute the annotations here! 
         # the annotations are made with the separate python file
         # annotation_img = da.from_zarr(str(annotation_img))
         annotation_img = from_zarr_fresh(str(annotation_img))
+        # print("annotation unique:", np.unique(annotation_img[:1].compute()))
+        annotation_img = annotation_img[::z_stride]
+        print("annotation unique:", np.unique(annotation_img[:].compute()))
+
 
     if not flatten_with:
         # Rechunk for smooth Z scrolling: (1,H,W)
         img = img_raw.rechunk((1, img_raw.shape[-2], img_raw.shape[-1]))
-        lbl = lbl_raw.rechunk((1, lbl_raw.shape[-2], lbl_raw.shape[-1]))
-        return img, lbl, annotation_img,vp.stem
+        # lbl = lbl_raw.rechunk((1, lbl_raw.shape[-2], lbl_raw.shape[-1]))
+
+        # rechunk each labels dataset for smooth Z scroll
+        lbl = {k: v.rechunk((1, v.shape[-2], v.shape[-1])) for k, v in lbl_raw.items()}
+        return img, lbl, annotation_img, vp.stem
+
 
     # ensure flat caches
     img_f = ensure_image_flat_zarr(vp, flatten_with, z_stride, overwrite,dir_suffix=dir_suffix)
-    lbl_f = ensure_labels_flat_zarr(vp, flatten_with, z_stride, OVERWRITE_LABELS,dir_suffix=dir_suffix)
+    lbl_f = ensure_labels_flat_zarr(vp, flatten_with, z_stride, overwrite,dir_suffix=dir_suffix)
     img_flat = da.from_zarr(str(img_f))    # (Z,Y,X)
     lbl_flat = da.from_zarr(str(lbl_f))
 
     # Align Z to the smaller one (defensive)
-    common_Z = min(img_raw.shape[0], img_flat.shape[0])
-    img_raw = img_raw[:common_Z]; lbl_raw = lbl_raw[:common_Z]
-    img_flat = img_flat[:common_Z]; lbl_flat = lbl_flat[:common_Z]
+    print("skipping commmon z")
+    # common_Z = min(img_raw.shape[0], img_flat.shape[0])
+    # img_raw = img_raw[:common_Z]; lbl_raw = lbl_raw[:common_Z]
+    # img_flat = img_flat[:common_Z]; lbl_flat = lbl_flat[:common_Z]
 
     # Stack channels: (C=2,Z,Y,X) and rechunk to (1,1,H,W) for scrolling
     img = da.stack([img_raw, img_flat], axis=0).rechunk((1, 1, img_raw.shape[-2], img_raw.shape[-1]))
@@ -266,7 +395,7 @@ def main():
     args = parse_args()
 
 
-    global OVERWRITE_LABELS
+    global OVERWRITE_LABELS # We no longer use this actually
     OVERWRITE_LABELS = args.overwrite_labels
     if args.overwrite_files:
         print("will by default overwrite_labels bc overwrithe_files=True")
@@ -290,7 +419,9 @@ def main():
     viewer = napari.Viewer(ndisplay=2)
 
     # Keep handles & index in a tiny mutable namespace
-    state = {"idx": 0, "img_layer": None, "lbl_layer": None, "annotation_layer":None,"name": None}
+    # state = {"idx": 0, "img_layer": None, "lbl_layer": None, "annotation_layer":None,"name": None}
+    state = {"idx": 0, "img_layer": None, "lbl_layers": {}, "annotation_layer": None, "name": None}
+
 
     def _add_current_volume():
         """Load current volume (by state['idx']) and attach to layers (lazy)."""
@@ -303,7 +434,7 @@ def main():
             dir_suffix=args.labels_dir_suffix
         )
         state["name"] = name
-        print(f"at current index with vp = {vp}, the shapes of are {[e.shape for e in [img, lbl, annotation_img]]}")
+        # print(f"at current index with vp = {vp}, the shapes of are {[e.shape for e in [img, lbl, annotation_img]]}")
 
         if img.ndim == 3:         # (Z,Y,X)
             viewer.dims.axis_labels = ("z", "y", "x")
@@ -312,6 +443,19 @@ def main():
             viewer.dims.axis_labels = ("channel", "z", "y", "x")
             scale = (1, 1, 1/3, 1)
 
+        def force_bscan_view(img_ndim: int):
+            # Want displayed axes = (y, x)
+            if img_ndim == 3:          # (z,y,x)
+                viewer.dims.order = (0, 1, 2)
+            elif img_ndim == 4:        # (c,z,y,x)
+                viewer.dims.order = (0, 1, 2, 3)
+                lock_channel_axis(viewer, chan_axis=0)  # keeps channel as slider
+            # optional: start in middle z
+            if img_ndim in (3,4):
+                z_axis = 0 if img_ndim == 3 else 1
+                cur = list(viewer.dims.current_step)
+                cur[z_axis] = int(viewer.dims.range[z_axis][2]//2) if hasattr(viewer.dims, "range") else cur[z_axis]
+                viewer.dims.current_step = tuple(cur)
         # First time: add layers; otherwise, just swap .data
         if state["img_layer"] is None:
             # Axis labels + scale depend on ndim
@@ -325,11 +469,18 @@ def main():
                 contrast_limits=clims, scale=scale,
                 metadata={"src_path": str(vp)},
             )
-            state["lbl_layer"] = viewer.add_labels(
-                lbl, name="boundaries",
-                opacity=0.5, scale=scale,
-            )
-            state["lbl_layer"].color = {1:'magenta', 2:'yellow', 3:'cyan', 4:'orange'}
+            # state["lbl_layer"] = viewer.add_labels(
+            #     lbl, name="boundaries",
+            #     opacity=0.5, scale=scale,
+            # )
+            # state["lbl_layer"].color = {1:'magenta', 2:'yellow', 3:'cyan', 4:'orange',5:'blue',6:'green'}
+
+            state["lbl_layers"] = {}
+            for set_name, arr in lbl.items():
+                print(f'set_name = {set_name}, shape = {arr.shape}')
+                lyr = viewer.add_labels(arr, name=set_name, opacity=0.5, scale=scale)
+                lyr.color = {1:'magenta', 2:'yellow', 3:'cyan', 4:'orange', 5:'blue', 6:'green'}
+                state["lbl_layers"][set_name] = lyr
 
             if annotation_img is not None:
                 state["annotation_layer"] = viewer.add_labels( #this might be none
@@ -374,11 +525,28 @@ def main():
                 lock_channel_axis(viewer, chan_axis=0)
 
 
+            force_bscan_view(img.ndim)
+            print("order:", viewer.dims.order, "displayed:", viewer.dims.displayed, "labels:", viewer.dims.axis_labels)
+
         else:
             # Swap data in-place (old arrays are GC-able)
             state["img_layer"].data = img
             state["img_layer"].metadata["src_path"] = str(vp)   # <-- add this
-            state["lbl_layer"].data = lbl
+            # state["lbl_layer"].data = lbl
+            # Update or recreate label layers if keys changed
+            cur_keys = set(state["lbl_layers"].keys())
+            new_keys = set(lbl.keys())
+            if cur_keys != new_keys:
+                for lyr in list(state["lbl_layers"].values()):
+                    viewer.layers.remove(lyr)
+                state["lbl_layers"] = {}
+                for set_name, arr in lbl.items():
+                    lyr = viewer.add_labels(arr, name=set_name, opacity=0.5, scale=scale)
+                    lyr.color = {1:'magenta', 2:'yellow', 3:'cyan', 4:'orange', 5:'blue', 6:'green'}
+                    state["lbl_layers"][set_name] = lyr
+            else:  #keys match
+                for set_name, arr in lbl.items():
+                    state["lbl_layers"][set_name].data = arr
             if annotation_img is not None:
                 # Recall we are sometimes refreshing this info and so we needed to allow a full rewrite.
                 if state["annotation_layer"] is None:
@@ -390,6 +558,8 @@ def main():
                 else:
                     state["annotation_layer"].data = annotation_img
 
+        force_bscan_view(img.ndim)
+        print("order:", viewer.dims.order, "displayed:", viewer.dims.displayed, "labels:", viewer.dims.axis_labels)
         viewer.status = f"[{state['idx']+1}/{len(ALL_VOL_PATHS)}] {state['name']}"
 
     if args.regenerate_all_volumes_only:
@@ -420,9 +590,18 @@ def main():
     # Toggle labels visibility (labels cost a 2nd read per scroll)
     @viewer.bind_key("L")
     def _toggle_labels(v):
-        lyr = state["lbl_layer"]
-        lyr.visible = not lyr.visible
-        v.status = f"Labels visible: {lyr.visible}"
+        # lyr = state["lbl_layer"]
+        # lyr = v.layers["lbl_layer"]
+        # lyr = v.layers["boundaries"]
+        # lyr.visible = not lyr.visible
+        # v.status = f"Labels visible: {lyr.visible}"
+        if not state["lbl_layers"]:
+            return
+        any_layer = next(iter(state["lbl_layers"].values()))
+        new_vis = not any_layer.visible
+        for lyr in state["lbl_layers"].values():
+            lyr.visible = new_vis
+        v.status = f"Boundary labels visible: {new_vis}"
 
     @viewer.bind_key("Ctrl-D")
     def _drop_current_annotations(v):
