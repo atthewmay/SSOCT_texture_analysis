@@ -8,16 +8,21 @@ import re
 from dask import array as da
 
 
-def load_constants():
-    """Loads my constants dict"""
-    try:
-        import yaml
-        constants_path = "/Users/matthewhunt/Research/Iowa_Research/Han_AIR/code_files/CONSTANTS.yaml"
-        CONSTANTS_dict = yaml.safe_load(open(constants_path, "r"))
-        return CONSTANTS_dict
-    except:
-        print("For some reason unable to load the constants dictionary. Returning empty dict. May cause downstream failures, might not!")
-        return None
+
+def load_constants(constants_path: str | Path | None = None) -> dict:
+    """
+    Load CONSTANTS.yaml located next to this file (code_files/CONSTANTS.yaml),
+    unless an explicit path is provided.
+    """
+    import yaml
+    if constants_path is None:
+        constants_path = Path(__file__).resolve().with_name("CONSTANTS.yaml")
+        # equivalent: Path(__file__).resolve().parent / "CONSTANTS.yaml"
+
+    constants_path = Path(constants_path).expanduser()
+
+    with constants_path.open("r") as f:
+        return yaml.safe_load(f)
 
 
 C = load_constants()
