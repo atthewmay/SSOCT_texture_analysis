@@ -10,10 +10,15 @@ from dask import array as da
 
 def load_constants():
     """Loads my constants dict"""
-    import yaml
-    constants_path = "/Users/matthewhunt/Research/Iowa_Research/Han_AIR/code_files/CONSTANTS.yaml"
-    CONSTANTS_dict = yaml.safe_load(open(constants_path, "r"))
-    return CONSTANTS_dict
+    try:
+        import yaml
+        constants_path = "/Users/matthewhunt/Research/Iowa_Research/Han_AIR/code_files/CONSTANTS.yaml"
+        CONSTANTS_dict = yaml.safe_load(open(constants_path, "r"))
+        return CONSTANTS_dict
+    except:
+        print("For some reason unable to load the constants dictionary. Returning empty dict. May cause downstream failures, might not!")
+        return None
+
 
 C = load_constants()
 
