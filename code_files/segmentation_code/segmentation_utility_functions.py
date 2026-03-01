@@ -19,6 +19,37 @@ from scipy.ndimage import median_filter
 import cv2
 
 
+def normalize_image(img,zero_min=False):
+    """assert is all postive and then norm between 0-1"""
+    x = np.asarray(img, dtype=np.float32)
+
+    mn = float(np.min(x))
+    if mn<0: #rectify s.t. none are negative
+        if zero_min == False:
+            print(f"setting zero min to true anyway with a min<0 of {mn}")
+        zero_min = True
+    # assert mn >= 0, f"normalize_image expected all >=0, but min={mn}"
+    if zero_min:
+        x = x-mn
+
+    mx = float(np.max(x))
+    if mx == 0.0:
+        return np.zeros_like(x, dtype=np.float32)
+
+    return x / mx
+
+
+def normalize_image_per_column(img):
+    """set each column of an image to have min 0 and max 1"""
+    img = np.asarray(img, dtype=float)
+
+    col_min = img.min(axis=0, keepdims=True)          # (1, W)
+    col_max = img.max(axis=0, keepdims=True)          # (1, W)
+    denom = col_max - col_min
+    denom = np.where(denom == 0, 1.0, denom)          # avoid divide-by-zero for flat columns
+
+    return (img - col_min) / denom
+
 def _axial_gradient(img, kernel):
     return convolve(img.astype(np.float32), kernel[:, None], mode='reflect')
 
@@ -731,6 +762,65 @@ class peakSuppressor(object):
         return x
 
 
+
+    @staticmethod
+    def _peaks_to_line(
+        peaks: list,
+        W: int,
+        mode: str = "topmost",
+        nth: int = 0,
+        peak_source_image: np.ndarray | None = None,
+    ) -> np.ndarray:
+        yline = np.full(W, np.nan, dtype=float)
+
+        need_img = mode in ("strongest", "top_unless_not_top2_intensity")
+        if need_img and peak_source_image is None:
+            raise ValueError(f"mode='{mode}' requires peak_source_image")
+
+        for c in range(W):
+            p = np.asarray(peaks[c], dtype=int)
+            if p.size == 0:
+                continue
+
+            if mode == "topmost":
+                yline[c] = float(p.min())
+
+            elif mode == "bottommost":
+                yline[c] = float(p.max())
+
+            elif mode == "nth":
+                ps = np.sort(p)
+                if 0 <= nth < ps.size:
+                    yline[c] = float(ps[nth])
+
+            elif mode == "strongest":
+                vals = peak_source_image[p, c]
+                yline[c] = float(p[int(np.argmax(vals))])
+
+            elif mode == "top_unless_not_top2_intensity":
+                ps = np.sort(p)                 # depth order
+                top = ps[0]
+                if ps.size == 1:
+                    yline[c] = float(top)
+                    continue
+
+                vals = peak_source_image[ps, c]  # intensities aligned to ps
+                # indices of top-2 vals within `ps`
+                k = 2 if vals.size >= 2 else 1
+                top2_idx = np.argpartition(vals, -k)[-k:]   # unsorted, fine for membership
+                top_is_top2 = 0 in set(top2_idx)            # because `top` is ps[0]
+
+                if top_is_top2:
+                    yline[c] = float(top)
+                else:
+                    # pick the "next peak" in depth order
+                    yline[c] = float(ps[1])
+
+            else:
+                raise ValueError(f"unknown mode: {mode}")
+
+        return yline
+
     @staticmethod
     def suppress_above_below_line(img, line, factor=0.0, px_margin_to_start_suppressing=2, direction="above"):
         img = img.copy()
@@ -759,7 +849,7 @@ class peakSuppressor(object):
 
 
     @staticmethod
-    def peak_suppression_pipeline(peak_source_image,image_to_alter,ilm_line,**kwargs):
+    def peak_suppression_pipeline(peak_source_image,image_to_alter,ilm_line,use_third_peak=True,**kwargs):
         """peak source img and img to alter are likely the same images.
         This pipeline works for the enh type gradient images, where you likely have a bright ILM, and bright RPE, with likely some choroidal junk below
         For EZ-vs-RPE distinction, use the EZ_RPE_peak_suppression_pipeline
@@ -776,8 +866,20 @@ class peakSuppressor(object):
                                 min_offset=cfg['min_offset'],
         )
 
-        suppressed_img = peakSuppressor.suppress_below_third_peak_valley(image_to_alter,peaks,
-                                                                    factor=cfg['suppression_factor'])
+        if use_third_peak:
+            suppressed_img = peakSuppressor.suppress_below_third_peak_valley(image_to_alter,peaks,
+                                                                        factor=cfg['suppression_factor'])
+        else:
+            line = peakSuppressor._peaks_to_line(peaks,W=peak_source_image.shape[1],mode='top_unless_not_top2_intensity',peak_source_image=peak_source_image)
+            suppressed_img = peakSuppressor.suppress_above_below_line(image_to_alter,line,
+                                                                        factor=cfg['suppression_factor'],direction='below',px_margin_to_start_suppressing=15)
+            AB=spu.ArrayBoard(skip=True,plt_display=False,save_tag='testing peak line and suppression for ILM')
+            AB.add(peak_source_image,title='peak_source_img')
+            peak_img = spu.overlay_peaks_on_image(peak_source_image,peaks)
+            AB.add(peak_img,title='with peaks')
+            AB.add(peak_source_image,lines={'peak_to_line':line},title='peak_converted_to_line')
+            AB.add(suppressed_img,lines={'peak_to_line':line},title='suppressed_img')
+            AB.render()
 
         return suppressed_img
 
@@ -890,6 +992,36 @@ class peakSuppressor(object):
         fig.show()
         plt.show()
 
+def apply_ilm_margin(cost, ilm_y, margin_below=4,max_factor=2,use_max=False):
+    """
+    Modify a cost map so that all rows above (ILM - margin_below) are set
+    to a fixed high value (max of the current cost matrix).
+    
+    Parameters
+    ----------
+    cost : (H, W) ndarray
+        Existing cost map.
+    ilm_y : (W,) array_like
+        ILM row positions (NaN where undefined).
+    margin_below : int
+        Margin (pixels) to extend below the ILM. Everything shallower
+        than (ILM + margin_below) is forbidden by setting to max cost.
+    """
+    H, W = cost.shape
+    ilm_y = np.asarray(ilm_y, float)
+    max_cost = np.nanmax(cost)
+
+    for j in np.flatnonzero(np.isfinite(ilm_y)):
+        cutoff = int(min(H-1, max(0, np.floor(ilm_y[j] + margin_below))))
+        if use_max:
+            cost[:cutoff, j] = max_cost  # clamp everything shallower
+        elif max_factor:
+            cost[:cutoff, j] += max_cost//max_factor # clamp everything shallower
+        else:
+            raise Exception
+    
+    return cost
+
 
 
 def guided_dp_rpe(
@@ -960,36 +1092,6 @@ def guided_dp_rpe(
                 # add penalty outside window
                 data_cost[:, cols] += hard_penalty * hard_mask
 
-    def apply_ilm_margin(cost, ilm_y, margin_below=4,max_factor=2,use_max=False):
-        """
-        Modify a cost map so that all rows above (ILM - margin_below) are set
-        to a fixed high value (max of the current cost matrix).
-        
-        Parameters
-        ----------
-        cost : (H, W) ndarray
-            Existing cost map.
-        ilm_y : (W,) array_like
-            ILM row positions (NaN where undefined).
-        margin_below : int
-            Margin (pixels) to extend below the ILM. Everything shallower
-            than (ILM + margin_below) is forbidden by setting to max cost.
-        """
-        H, W = cost.shape
-        ilm_y = np.asarray(ilm_y, float)
-        max_cost = np.nanmax(cost)
-
-        for j in np.flatnonzero(np.isfinite(ilm_y)):
-            cutoff = int(min(H-1, max(0, np.floor(ilm_y[j] + margin_below))))
-            if use_max:
-                cost[:cutoff, j] = max_cost  # clamp everything shallower
-            elif max_factor:
-                cost[:cutoff, j] += max_cost//max_factor # clamp everything shallower
-            else:
-                raise Exception
-        
-        return cost
-
 
     # --- Depth prior: favor deeper rows (RPE is bottom-most among the three)
     # cost += -beta_depth * (i/H); i increases downward, so deeper rows get lower cost
@@ -1005,7 +1107,7 @@ def guided_dp_rpe(
         # ONH_region=None, # a matrix same size as img_or_prob (could be just a vector that we expand, if need be). Will set cost to some constant lower value
         # As long as lambda_step != 0, should connect to correct layer hopefully? 
         # this will need to be a hyperparameter
-        if type(ONH_region)!=np.array:
+        if hasattr(ONH_region,"compute"):
             ONH_region = ONH_region.compute() # assuming it's dask at this point, maybe zarr
         # ONH_without_fovea = ONH_region.copy()
         # ONH_without_fovea[ONH_without_fovea!=1] = 0 
@@ -1026,7 +1128,7 @@ def guided_dp_rpe(
 def modify_cost_with_ONH_info(cost,ONH_region,ONH_value_factor):
     """overlying the optic nerve, make a constant cost so as to minimize disruption with DP 
     cost is the image to be input into the DP. ONH_region must be of the same shape."""
-    if type(ONH_region)!=np.array:
+    if hasattr(ONH_region,'compute'):
         ONH_region = ONH_region.compute() # assuming it's dask at this point, maybe zarr
     # ONH_without_fovea = ONH_region.copy()
     # ONH_without_fovea[ONH_without_fovea!=1] = 0 
@@ -1036,21 +1138,90 @@ def modify_cost_with_ONH_info(cost,ONH_region,ONH_value_factor):
     cost[ONH_without_fovea[:cost.shape[0],:].astype(bool)]=to_assign
     return cost
 
+import numpy as np
 
-def run_DP_on_cost_matrix(cost,max_step,lambda_step):
+def _onh_cols_from_region(ONH_region, W: int):
+    """
+    Returns onh_cols: (W,) bool mask.
+
+    Accepts:
+      - (W,) already-a-column-mask (0/1/2 or bool)
+      - (H,W) pixel mask for this B-scan
+      - (Z,W) enface-style mask; collapses across Z (fallback)
+    Treats label==2 as "not ONH" (your fovea exclusion).
+    """
+    if ONH_region is None:
+        return None
+
+    if hasattr(ONH_region, "compute"):
+        ONH_region = ONH_region.compute()
+
+    reg = np.asarray(ONH_region)
+
+    if reg.ndim == 1:
+        reg = reg[:W]
+        reg = np.where(reg == 2, 0, reg) #zero the fovea
+        return reg.astype(bool)
+
+    if reg.ndim == 2:
+        # common: (H,W) for the current b-scan OR (Z,W) en-face style
+        if reg.shape[1] != W:
+            reg = reg.T if reg.shape[0] == W else reg[:, :W]
+        reg = np.where(reg == 2, 0, reg)
+        # collapse rows (H or Z) -> columns
+        return np.any(reg != 0, axis=0)
+
+    raise ValueError(f"ONH_region must be 1D or 2D; got shape {reg.shape}")
+
+def calculate_darkness_barrier_and_Bcs(cost,mode='knee',t=0.8,p=0.5,alpha=6.0):
+    """refactoring this out. could further refactor the dbf into the bcs itself"""
+    assert np.amax(cost) == 1 # normalize inputs
+    assert np.amin(cost) == 0
+    if mode == 'exp':
+        barrier = barrier_from_cost_exp(cost, alpha)         # option 1
+    elif mode == 'knee':
+        barrier = barrier_from_cost_knee(cost, t=t,p=p)         # option 1
+    else:
+        raise Exception("must set proper mode please!")
+    Bcs = np.cumsum(barrier, axis=0)
+    return Bcs,barrier
+
+def run_DP_on_cost_matrix(cost,max_step,lambda_step,ONH_region=None,lambda_step_in_ONH_region=None,dbf=0,Bcs=None):
+    """MAJOR FUNCTION big hitter here. Now adding ability to step freely throughout ONH region or set a separate step function"""
     # --- Dynamic programming (first-order smoothness with max_step)
     H,W = cost.shape # assume 2D
 
     C = np.full((H, W), np.inf, dtype=float)
     P = np.full((H, W), -1, dtype=int)  # predecessor row index
 
+    if ONH_region is not None:
+        assert lambda_step_in_ONH_region is not None
+        ONH_without_fovea = np.where(ONH_region == 2, 0, ONH_region)
+        ONH_cols = ONH_without_fovea[0,:] != 0 # It should be all the same per row
+
+    if Bcs is not None and ONH_region is not None:
+        Bcs[:,ONH_cols]=0
+
+
     C[:, 0] = cost[:, 0]
+    lambda_step_to_use = lambda_step
     for j in range(1, W):
         # for each target row i at column j, consider predecessors k in [i-max_step .. i+max_step]
+        if ONH_region is not None:
+            lambda_step_to_use = lambda_step_in_ONH_region if ONH_cols[j] != 0 else lambda_step
+
+        Bcs_col = Bcs[:, j] if (Bcs is not None) else None
+
         for i in range(H):
             k0 = max(0, i - max_step)
             k1 = min(H - 1, i + max_step)
-            prev = C[k0:k1+1, j-1] + lambda_step * np.abs(np.arange(k0, k1+1) - i)
+
+            ks = np.arange(k0, k1 + 1)                           # candidate previous rows
+            dy = np.abs(ks - i) 
+            prev = C[k0:k1+1, j-1] + lambda_step_to_use * dy      # base smoothness
+
+            if Bcs_col is not None:
+                prev = prev + dbf * barrier_integral_to_i(Bcs_col, ks, i)
             krel = int(np.argmin(prev))
             C[i, j] = cost[i, j] + prev[krel]
             P[i, j] = k0 + krel
@@ -1964,6 +2135,40 @@ def apply_gaussian_tube_mul(
 
     return out
 
+
+def apply_gaussian_tube_suppression(
+    img: np.ndarray,
+    guide_y: np.ndarray,
+    sigma: float = 10,
+    gain: float = 1.0,
+
+) -> np.ndarray:
+    """
+    instead this does the opposite, performing subtraction of a value, and then zeroing everything less than zero. Used to soft-zero an area around a line.
+    img: (H,W) float or uint image
+    guide_y: (W,) y-coordinates (row index) with np.nan for missing
+    """
+    H, W = img.shape
+    gy = np.asarray(guide_y, float)
+    cols = np.flatnonzero(np.isfinite(gy))
+    if cols.size == 0:
+        return img.copy()
+
+    sigma = max(float(sigma), 1e-6)
+
+    rows = np.arange(H)[:, None]          # (H,1)
+    g = gy[cols][None, :]                 # (1,K)
+    tube = np.exp(-0.5 * ((rows - g) / sigma) ** 2)   # (H,K)
+    # above performs a broadcasting s.t. each index in a column is the value of the distance of that pixel from the guide_y, and then that's put thru the square
+
+    subtract = np.ones((H, W), dtype=float)
+    subtract[:, cols] = 0 + float(gain) * tube
+    out = img.astype(float, copy=False) - subtract
+    out[out<0]=0
+    return out
+
+
+
 def keep_only_flat_segments(y, slope_tol=0.5, min_len=20):
     """
     Returns y_out same shape as y, with NaN everywhere except contiguous "flat" segments
@@ -2519,6 +2724,7 @@ def run_two_surface_DP(
         C is (H,H,W) with inf for invalid pairs (prototype; memory heavy)
         P1,P2 are predecessor row indices for backtracking
     """
+    return None # Again, i don' tthink we are really using this, check the two_surface_utils.py
     from tqdm import tqdm
     if cost1.shape != cost2.shape:
         raise ValueError(f"cost1 and cost2 must match. Got {cost1.shape} vs {cost2.shape}")
@@ -3130,3 +3336,46 @@ class GOFProcessing:
         )
 
         return peak_inten,peak_inten_narrowed,mask
+
+
+def barrier_sum(Bcs,j, a, b):
+    """implements the Darkness barrier. 
+    intakes barrier cumultative sum and then integrates over the size of proposed vertical jump to determine 
+    the barrier cost. worse in dark. """
+    lo = a if a < b else b
+    hi = b if a < b else a
+    s = Bcs[hi, j] - (Bcs[lo-1, j] if lo > 0 else 0.0)
+    return s
+
+
+def barrier_from_cost_knee(cost_norm, t=0.35, p=4.0):
+    """
+    cost_norm in [0,1] where 0=good ridge, 1=bad background.
+    t: knee (below this, ~no penalty)
+    p: steepness (bigger => harsher near 1)
+    """
+    x = (cost_norm - t) / max(1.0 - t, 1e-8)  # maps t..1 -> 0..1
+    x = np.clip(x, 0.0, 1.0)
+    return x**p
+
+
+def barrier_from_cost_exp(cost_norm, alpha=6.0):
+    """
+    alpha: bigger => more emphasis on high cost (near 1)
+    normalized to [0,1]
+    """
+    return np.expm1(alpha * np.clip(cost_norm, 0.0, 1.0)) / np.expm1(alpha)
+
+def barrier_integral_to_i(Bcs_col: np.ndarray, ks: np.ndarray, i: int) -> np.ndarray:
+    """
+    Bcs_col: (H,) prefix sums for one column
+    ks:      (N,) candidate predecessor rows
+    i:       scalar current row
+    returns: (N,) sum of barrier between ks and i (inclusive-ish)
+    """
+    lo = np.minimum(ks, i)
+    hi = np.maximum(ks, i)
+    # sum barrier[lo:hi] using prefix sums
+    # prefix sum convention: Bcs[y] = sum_{t<=y} barrier[t]
+    out = Bcs_col[hi] - np.where(lo > 0, Bcs_col[lo - 1], 0.0)
+    return out

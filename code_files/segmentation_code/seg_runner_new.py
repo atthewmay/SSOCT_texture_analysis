@@ -124,12 +124,14 @@ def load_extra_slices_and_prior_layers(golden_set_dict,
     return slices,ONH_annotations,golden_set_layers
 
 
-def grab_current_onh_info(onh_path,z_index):
+def grab_current_onh_info(onh_path,z_index,z_stride=1):
     """if it exists, also load up the ONH info.
     issue: these are stored as zarr directories, so we need to use a different function to load them"""
     print("you are loadign the full-resolution ONH info stack, may need downsampling if using a downsampled array")
     ONH_info = da.from_zarr(str(onh_path))                # lazy
-    return ONH_info[int(z_index),:,:][...] # This is causing error somehow
+    z_idx_to_grab = z_index * z_stride
+    print(f"will be grabbing z_idx of {z_idx_to_grab}, derived from z_index of {z_index} with z_stride = {z_stride}")
+    return ONH_info[int(z_idx_to_grab),:,:][...] # This is causing error somehow
 
 # -----------------------------
 #  Rendering
@@ -218,6 +220,8 @@ def main():
     ap.add_argument('--run_extra_slices', action='store_true', help='run serially for pdb-friendly debugging')  # <-- ADD
     ap.add_argument('--img_src_path')  # <-- ADD
     ap.add_argument('--z_index')  # <-- ADD
+    ap.add_argument('--z_stride')  # <-- ADD
+    ap.add_argument('--RPE_OR_ILM',type=str,default="RPE")  # <-- ADD
     args = ap.parse_args()
 
     # Load current (first) slice — always page 1
@@ -228,10 +232,13 @@ def main():
 
     onh_info_path = fu.image_to_annotation_path(Path(args.img_src_path))
     try:
-        current_onh_info = grab_current_onh_info(onh_info_path,args.z_index)
+        current_onh_info = grab_current_onh_info(onh_info_path,
+                                                 int(args.z_index),
+                                                 int(args.z_stride))
         print(f"onh_info vol lives at path: {onh_info_path}")
-    except:
+    except Exception as e:
         print(f"unable to load ONH info at {onh_info_path}")
+        print(f"Exception was {e}")
         current_onh_info = None
     current = (current,current_onh_info,work_id)
 
@@ -266,14 +273,23 @@ def main():
     # segmentation_steps = sp.RPE_STEPS_1_25_26
     # segmentation_steps = sp.RPE_STEPS_2_2_26
     # segmentation_steps = sp.RPE_STEPS_2_14_26
-    segmentation_steps = sp.RPE_STEPS_2_14_26_debug
+    # segmentation_steps = sp.RPE_STEPS_2_14_26_debug
+    # segmentation_steps = sp.RPE_STEPS_2_14_26_debug
+    # if args.RPE_OR_ILM == 'ILM': # we don't need the RPE option bc we terminate after the steps complete. Thus the default option of 
+        # ilm_segmentation_steps = sp.ILM_STEPS_2_27_26_take2
+    # else:
+        # ilm_segmentation_steps = sp.ILM_STEPS_12_5_25
+    ilm_segmentation_steps = sp.ILM_STEPS_2_28
+    # rpe_segmentation_steps = sp.RPE_STEPS_2_27_26
+    rpe_segmentation_steps = sp.RPE_STEPS_2_28_26
+    # if args.RPE_OR_ILM == 'RPE':
     if args.debug or args.max_workers <= 1:
         # Serial, pdb-friendly path
-        results = [segmentation_function(t,False,segmentation_steps) for t in work]
+        results = [segmentation_function(t,False,rpe_segmentation_steps,ilm_segmentation_steps) for t in work]
     else:
         from concurrent.futures import ProcessPoolExecutor
         with ProcessPoolExecutor(max_workers=args.max_workers) as exe:
-            futures = [exe.submit(segmentation_function, t,False,segmentation_steps) for t in work] # Setting production mode to false
+            futures = [exe.submit(segmentation_function, t,False,rpe_segmentation_steps,ilm_segmentation_steps) for t in work] # Setting production mode to false
             results = [f.result() for f in futures]
 
     # Sort by the artificial order index (so page 1 is the current slice)

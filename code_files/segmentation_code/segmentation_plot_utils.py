@@ -432,7 +432,7 @@ def save_results_in_PDF(results,output_file=None):
 import math
 
 class ArrayBoard:
-    def __init__(self,skip=False,plt_display=True,dpi = 300,save_tag="",return_fig=False,ncols_max=6):
+    def __init__(self,skip=False,plt_display=False,dpi = 300,save_tag="",return_fig=False,ncols_max=6):
         self.items = []  # list of (array, title)
         self.skip = skip
         self.plt_display = plt_display
@@ -483,6 +483,9 @@ class ArrayBoard:
         )
 
         for i, (kind,payload,lines, title) in enumerate(self.items):
+            if payload is None or (isinstance(payload, np.ndarray) and payload.shape == () and payload.dtype == object and payload.item() is None):
+                print(f"payload for {title} is effectively none, coninuing")
+                continue
             r, c = divmod(i, ncols)
             ax = axs[r][c]
             if kind == "image":
@@ -568,7 +571,12 @@ def quickfig(array,title=None):
     plt.figure()
     plt.imshow(array,cmap='gray')
     plt.title(title)
-    plt.show()
+    try:
+        plt.show()
+    except:
+        save_path = "/Users/matthewhunt/Research/Iowa_Research/Han_AIR/results/temp_figs/save_quickfig"
+        print(f'unable to plot apparanetly, saving instead at {save_path}')
+        plt.savefig(save_path)
 
 
 from concurrent.futures import ProcessPoolExecutor

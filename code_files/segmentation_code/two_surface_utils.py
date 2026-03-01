@@ -1,7 +1,9 @@
 from textwrap import fill
 import numpy as np
 import code_files.segmentation_code.segmentation_utility_functions as suf
-import code_files.segmentation_code.segmentation_plot_utils as spu 
+import code_files.segmentation_code.segmentation_plot_utils as spu
+from code_files.segmentation_code.segmentation_utility_functions import barrier_sum
+from code_files.segmentation_code.segmentation_utility_functions import barrier_from_cost_exp 
 
 
 def _column_best_and_second_best_gap(cost_col: np.ndarray, guard: int = 3):
@@ -29,33 +31,6 @@ def _column_best_and_second_best_gap(cost_col: np.ndarray, guard: int = 3):
 
     gap = float(second - best_v)
     return best_i, gap
-
-
-def barrier_sum(Bcs,j, a, b):
-    """implements the Darkness barrier. 
-    intakes barrier cumultative sum and then integrates over the size of proposed vertical jump to determine 
-    the barrier cost. worse in dark. """
-    lo = a if a < b else b
-    hi = b if a < b else a
-    s = Bcs[hi, j] - (Bcs[lo-1, j] if lo > 0 else 0.0)
-    return s
-
-def barrier_from_cost_knee(cost_norm, t=0.35, p=4.0):
-    """
-    cost_norm in [0,1] where 0=good ridge, 1=bad background.
-    t: knee (below this, ~no penalty)
-    p: steepness (bigger => harsher near 1)
-    """
-    x = (cost_norm - t) / max(1.0 - t, 1e-8)  # maps t..1 -> 0..1
-    x = np.clip(x, 0.0, 1.0)
-    return x**p
-
-def barrier_from_cost_exp(cost_norm, alpha=6.0):
-    """
-    alpha: bigger => more emphasis on high cost (near 1)
-    normalized to [0,1]
-    """
-    return np.expm1(alpha * np.clip(cost_norm, 0.0, 1.0)) / np.expm1(alpha)
 
 
 import numpy as np
@@ -86,6 +61,14 @@ def run_two_surface_DP(
     barrier_cost_params: dict = {'alpha':6.0}, # woud modify if using the other
     barrier_cost_function = barrier_from_cost_exp,
     darkness_barrier_factor: float = 0.0,
+
+    # --- NEW: ONH handling ---
+    ONH_region=None,
+    onh_cost: float = 0.5,               # boundary cost in ONH columns
+    # onh_disable_kappa: bool = True,      # ignore anchoring in ONH columns
+    # onh_disable_barrier: bool = True,    # ignore darkness barrier in ONH columns
+    # onh_exclude_from_norm: bool = True,  # exclude ONH columns from mn/mx for c2n
+
     # debug
     return_debug: bool = False,
 ):
@@ -111,6 +94,8 @@ def run_two_surface_DP(
         raise ValueError("Require 0 <= dmin <= dmax.")
 
     H, W = cost1.shape
+
+    onh_cols = suf._onh_cols_from_region(ONH_region, W)
 
     cost1 = np.asarray(cost1, dtype=float)
     cost2 = np.asarray(cost2, dtype=float)
@@ -154,6 +139,14 @@ def run_two_surface_DP(
     if darkness_barrier_factor != 0.0:
         barrier = barrier_cost_function(c2n, **barrier_cost_params)         # option 1
         Bcs = np.cumsum(barrier, axis=0)
+
+    if onh_cols is not None:
+        if Bcs is not None:
+            Bcs[:,onh_cols]=0
+        cost1[:,onh_cols]=onh_cost
+        cost2[:,onh_cols]=onh_cost
+    # print("we are attempting to do the quickfig")
+    # spu.quickfig(cost1)
 
     if prefer_lower_on_single and single_kappa > 0.0:
         # Build an evidence image from cost2 (higher=better for peaks).
@@ -213,6 +206,8 @@ def run_two_surface_DP(
         for j in range(W):
             anchor2[j] = int(np.argmin(cost2[:, j]))
 
+    if onh_cols is not None:
+        kappa[onh_cols] = 0.0
     # --------- DP tables ----------
     C_prev = np.full((H, H), np.inf, dtype=float)
     C_cur  = np.full((H, H), np.inf, dtype=float)

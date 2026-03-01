@@ -18,6 +18,7 @@ ILMStepFn = Callable[["ILMContext"], "ILMContext"]
 C = fu.load_constants()
 from joblib import Parallel,delayed
 
+from textwrap import fill
 
 
 
@@ -164,6 +165,8 @@ class RPEContext:
     guided_cost: Optional[np.ndarray] = None
     guided_cost_raw: Optional[np.ndarray] = None
 
+    rpe_enh_DP_cost_raw: Optional[np.ndarray] = None
+
     rpe_guided_tube_smoothed: Optional[np.ndarray] = None
     guided_cost_tube_smoothed: Optional[np.ndarray] = None
     guided_cost_raw_tube_smoothed: Optional[np.ndarray] = None
@@ -273,6 +276,7 @@ class ILMContext:
     idx: int
     original_image: np.ndarray
     cfg: ILMConfig
+    ID: Optional[str] = None
     img: np.ndarray = None
     ONH_region: Any = None
     kwargs: dict = field(default_factory=dict)
@@ -292,6 +296,26 @@ class ILMContext:
     ilm_tube_cost_raw: Optional[np.ndarray] = None
     ilm_tube_cost_DP_path: Optional[np.ndarray] = None
 
+
+    hypersmoothed_img: Optional[np.ndarray] = None
+    hypersmoother_params: HypersmootherParams = field(default_factory=HypersmootherParams)
+
+    peak_suppressed: Optional[np.ndarray] = None
+
+    inv_cost: Optional[np.ndarray] = None
+    thinline_inv_cost: Optional[np.ndarray] = None
+
+    penultimate_DP_cost: Optional[np.ndarray] = None
+    penultimate_DP_darkness_barrier_img: Optional[np.ndarray] = None
+
+    # final_DP_thinline_cost: Optional[np.ndarray] = None
+    # final_DP_thinline_darkness_barrier_img: Optional[np.ndarray] = None
+
+    ilm_smooth_thinline: Optional[np.ndarray] = None
+
+    # Final refining steps
+    DP_refining_tube: Optional[np.ndarray] = None
+    DP_final_cost: Optional[np.ndarray] = None
     # # debug / history
     # debug: bool = False
     # history: Dict[str, Any] = field(default_factory=dict)
@@ -469,30 +493,54 @@ def step_rpe_highres_smooth(ctx: RPEContext) -> RPEContext:
 
 
 
-def step_rpe_unsmooth(ctx: RPEContext) -> RPEContext:
-    """undoes the hypersmoothing for the lines and ILM. """
-    lines = [
-        ('rpe_raw',ctx.rpe_raw),
-        ('rpe_guided',ctx.rpe_guided),
-        ('rpe_guided_tube_smoothed',ctx.rpe_guided_tube_smoothed),
-        ('rpe_smooth',ctx.rpe_smooth),
-        ('ilm_seg',ctx.ilm_seg),
-        ]
+# def step_rpe_unsmooth(ctx: RPEContext) -> RPEContext:
+#     """undoes the hypersmoothing for the lines and ILM. """
+#     lines = [
+#         ('rpe_raw',ctx.rpe_raw),
+#         ('rpe_guided',ctx.rpe_guided),
+#         ('rpe_guided_tube_smoothed',ctx.rpe_guided_tube_smoothed),
+#         ('rpe_smooth',ctx.rpe_smooth),
+#         ('ilm_seg',ctx.ilm_seg),
+#         ]
    
-    for item in lines:
-        name,line = item
-        ctx.log_history(f'flat_{name}', line.copy())
+#     for item in lines:
+#         name,line = item
+#         ctx.log_history(f'flat_{name}', line.copy())
     
-    unwarped_lines = [suf.warp_line_by_shift(line[1],ctx.hypersmoother_params.hypersmoother_shift_y_full,direction='to_orig') for line in lines] #shoudl refactor
+#     unwarped_lines = [suf.warp_line_by_shift(line[1],ctx.hypersmoother_params.hypersmoother_shift_y_full,direction='to_orig') for line in lines] #shoudl refactor
     
 
-    (ctx.rpe_raw,
-    ctx.rpe_guided,
-    ctx.rpe_guided_tube_smoothed,
-    ctx.rpe_smooth,
-    ctx.ilm_seg) = unwarped_lines
+#     (ctx.rpe_raw,
+#     ctx.rpe_guided,
+#     ctx.rpe_guided_tube_smoothed,
+#     ctx.rpe_smooth,
+#     ctx.ilm_seg) = unwarped_lines
+#     return ctx
+
+def step_rpe_unsmooth(ctx: RPEContext) -> RPEContext:
+    """Undo hypersmoothing warp for whatever lines exist (and ILM if present)."""
+    names = ["rpe_raw", "rpe_guided", "rpe_guided_tube_smoothed", "rpe_smooth", "ilm_seg"]
+
+    shift = ctx.hypersmoother_params.hypersmoother_shift_y_full
+
+    for name in names:
+        if not hasattr(ctx, name):
+            continue
+        line = getattr(ctx, name)
+        if line is None:
+            continue
+
+        # optional logging if your ctx has it
+        if hasattr(ctx, "log_history") and callable(getattr(ctx, "log_history")):
+            ctx.log_history(f"flat_{name}", line.copy())
+
+        setattr(
+            ctx,
+            name,
+            suf.warp_line_by_shift(line, shift, direction="to_orig"),
+        )
+
     return ctx
-
 
 
 
@@ -592,6 +640,34 @@ def step_rpe_compute_enhancement(ctx: RPEContext) -> RPEContext:
     ctx.enh_f = images["enh_f"]
     return ctx
 
+def step_rpe_compute_enhancement2(ctx: RPEContext) -> RPEContext:
+    """2/28/26, now that we flatten w/ a different lowres rpe approx, we will trial w/o the aggressive enh_diff 
+    (formerly removed choroid signal, which now isn't as distracting, bc we don't try to one-shot the RPE). Will go ahead and combine peak suppression here"""
+    d_vertical = ctx.d_vertical if ctx.d_vertical != 0 else 1.0
+    vks_false = 2 * round((32 / d_vertical) * ctx.cfg.vks_false_factor)
+    enh_f = suf._boundary_enhance(
+        ctx.img,
+        vertical_kernel_size=vks_false,
+        dark2bright=False,
+        blur_ksize=ctx.cfg.blur_ksize,
+    )
+    ctx.enh = enh_f
+
+    ctx.peak_suppressed = suf.peakSuppressor.peak_suppression_pipeline(
+        ctx.enh,
+        ctx.enh,
+        ctx.ilm_seg,
+        suppression_factor=0.5,
+        third_peak_margin=30,
+    )
+
+    return ctx
+
+
+
+    
+
+
 
 def step_rpe_peak_suppression(ctx: RPEContext) -> RPEContext:
     ctx.peak_suppressed = suf.peakSuppressor.peak_suppression_pipeline(
@@ -641,9 +717,10 @@ def step_rpe_recalculate_single_seeded_and_reseed(ctx:RPEContext) -> RPEContext:
     ctx.seeds = seeds
 
     ctx.log_history('original_peak_suppressed', ctx.peak_suppressed.copy())
-    pre_suppressed_recalculated = suf.recalculate_single_seeded_cols(ctx.seeds,ctx.peak_suppressed,ctx.enh_f)
+    pre_suppressed_recalculated = suf.recalculate_single_seeded_cols(ctx.seeds,ctx.peak_suppressed,ctx.enh_f) #ah, this is bringing in old info that was too-aggressively removed usgng the downward horizontal blur
+    # Taking that info from the enh_f image
     ctx.log_history('pre_suppressed_recalculated',pre_suppressed_recalculated)
-    ctx.peak_suppressed = suf.peakSuppressor.peak_suppression_pipeline(
+    ctx.peak_suppressed = suf.peakSuppressor.peak_suppression_pipeline( #not sure why we are running this a second time, as i expect the same result... No, they are differrent, but I'm not sure why
         pre_suppressed_recalculated,
         pre_suppressed_recalculated,
         ctx.ilm_seg,
@@ -668,6 +745,93 @@ def step_rpe_recalculate_single_seeded_and_reseed(ctx:RPEContext) -> RPEContext:
     ctx.log_history('original_seeds' , ctx.seeds.copy())
     ctx.seeds = seeds
     return ctx
+
+def step_rpe_DP_on_enh_1(ctx: RPEContext) -> RPEContext:
+    """testing a different endpoint for the lower-res pathway where we instead just run a DP after suppressing below the ctx.ilm_seg"""
+    inv_cost = suf.normalize_image(ctx.peak_suppressed)
+    # cost = 1-inv_cost
+    AB = spu.ArrayBoard(skip=True,plt_display=False,save_tag=f"testing new DP on enh, ID={ctx.ID}")
+    # AB.add(inv_cost,lines={'ilm_seg':ctx.ilm_seg},title='inv_cost in')
+    # for sigma in [1,5,10]:
+    #     for gain in [1,3]:
+    #         processed_inv_cost = suf.apply_gaussian_tube_suppression(inv_cost,ctx.ilm_seg,sigma=sigma,gain=gain)
+    #         AB.add(processed_inv_cost,title = f'inv_cost with sigma={sigma},gain={gain}')
+    # AB.render()
+
+    processed_inv_cost = suf.apply_gaussian_tube_suppression(inv_cost,ctx.ilm_seg,sigma=10,gain=1)
+    # AB.add(processed_inv_cost,title = 'with ILM suppressed')
+    cost = 1-processed_inv_cost
+    # print(f"ctx onh region is shape {ctx.ONH_region.shape}, like {ctx.ONH_region}")
+    cost = suf.modify_cost_with_ONH_info(cost,ctx.ONH_region,ONH_value_factor=0.5)
+    ctx.rpe_enh_DP_cost_raw = cost # assign this for plotting
+    # AB.add(cost,title='cost in')
+    # for l in [0,0.3,0.5,1]:
+        # DP_out,_ = suf.run_DP_on_cost_matrix(cost,max_step=1,lambda_step=l,ONH_region=ctx.ONH_region,lambda_step_in_ONH_region=0.0001)
+        # AB.add(inv_cost,lines = {"DP line":DP_out},title=f"lambda step = {l}")
+    # AB.render()
+    ctx.rpe_smooth,_ = suf.run_DP_on_cost_matrix(cost,max_step=1,lambda_step=0.01,ONH_region=ctx.ONH_region,lambda_step_in_ONH_region=0.0001)
+
+    return ctx
+
+def step_rpe_DP_on_enh_2_debug(ctx: RPEContext) -> RPEContext:
+    """testing a different endpoint for the lower-res pathway where we instead just run a DP after suppressing below the ctx.ilm_seg"""
+    inv_cost = suf.normalize_image(ctx.peak_suppressed)
+    # cost = 1-inv_cost
+    AB = spu.ArrayBoard(skip=False,plt_display=False,save_tag=f"testing new DP on enh, ID={ctx.ID}")
+    AB.add(inv_cost,lines={'ilm_seg':ctx.ilm_seg},title='inv_cost in')
+    processed_inv_cost = suf.apply_gaussian_tube_suppression(inv_cost,ctx.ilm_seg,sigma=10,gain=1)
+    AB.add(processed_inv_cost,title = 'with ILM suppressed')
+    cost = 1-processed_inv_cost
+    # print(f"ctx onh region is shape {ctx.ONH_region.shape}, like {ctx.ONH_region}")
+    cost = suf.modify_cost_with_ONH_info(cost,ctx.ONH_region,ONH_value_factor=0.5)
+    AB.add(cost,title='cost in')
+
+    ctx.rpe_enh_DP_cost_raw = cost # assign this for plotting
+
+    def loop_contents(combo):
+        # Bcs,barrier = suf.calculate_darkness_barrier_and_Bcs(cost,combo.get('t',None))
+        norm_cost = suf.normalize_image_per_column(cost)
+        Bcs,barrier = suf.calculate_darkness_barrier_and_Bcs(norm_cost,t=combo.get('t',None),p=combo['p'])
+        DP_path,_ = suf.run_DP_on_cost_matrix(cost,max_step=1,lambda_step=0.01,ONH_region=ctx.ONH_region,lambda_step_in_ONH_region=0.001,dbf=combo['dbf'],Bcs=Bcs)
+        return DP_path,barrier,combo
+    combos=[]
+    for dbf in [5]:
+        # for alpha in [2,8]:
+        for t in [0.5]:
+            for p in [1,2]:
+                    # combos.append({'l':l,'dbf':dbf,'alpha':alpha})
+                combos.append({'dbf':dbf,'t':t,'p':p})
+    results = Parallel(n_jobs=8)(delayed(loop_contents)(c) for c in combos)
+    for r in results:
+        AB.add(r[1],title=f'barrier raw for {r[2]}')
+        AB.add(inv_cost,lines={"DP_path":r[0]},title=f'{r[2]}')
+    AB.render()
+    raise Exception("Done experimenetal plotting")
+
+
+def step_rpe_DP_on_enh_2(ctx: RPEContext) -> RPEContext:
+    """testing a different endpoint for the lower-res pathway where we instead just run a DP after suppressing below the ctx.ilm_seg"""
+    inv_cost = suf.normalize_image(ctx.peak_suppressed)
+    processed_inv_cost = suf.apply_gaussian_tube_suppression(inv_cost,ctx.ilm_seg,sigma=10,gain=1)
+    cost = 1-processed_inv_cost
+    cost = suf.modify_cost_with_ONH_info(cost,ctx.ONH_region,ONH_value_factor=0.5)
+    ctx.rpe_enh_DP_cost_raw = cost # assign this for plotting
+    norm_cost = suf.normalize_image_per_column(cost)
+    Bcs,barrier = suf.calculate_darkness_barrier_and_Bcs(norm_cost,t=0.5,p=1)
+    ctx.rpe_smooth,_ = suf.run_DP_on_cost_matrix(cost,max_step=1,lambda_step=0.01,ONH_region=ctx.ONH_region,lambda_step_in_ONH_region=0.001,dbf=5,Bcs=Bcs)
+
+    return ctx
+
+
+
+
+
+
+
+
+
+
+
 
 
 # A helper function here
@@ -745,39 +909,53 @@ def step_rpe_tube_smoother(ctx: RPEContext) -> RPEContext:
     ctx.rpe_guided_tube_smoothed = rpe_guided_tube_smoothed
     ctx.guided_cost_tube_smoothed = guided_cost_tube_smoothed
     ctx.guided_cost_raw_tube_smoothed = guided_cost_raw_tube_smoothed
+    ctx.rpe_smooth = suf.smooth_rpe_line(
+        ctx.rpe_guided_tube_smoothed,
+        rigidity=ctx.cfg.rigidity,
+    )
+
+
 
     # spu.save_image_exploration(ctx.img, rpe_guided_tube_smoothed, pickle_save=False) # won't actually run
     return ctx
 
 
-def step_rpe_smooth_and_upsample(ctx: RPEContext) -> RPEContext:
-    rpe_smooth = suf.smooth_rpe_line(
-        ctx.rpe_guided_tube_smoothed,
-        rigidity=ctx.cfg.rigidity,
-    )
+# def step_rpe_upsample(ctx: RPEContext) -> RPEContext:
+#     lines = [
+#         ctx.rpe_raw,
+#         ctx.rpe_guided,
+#         ctx.rpe_guided_tube_smoothed,
+#         ctx.rpe_smooth,
+#     ]
+#     upsampled = [
+#         suf.upsample_path(
+#             e,
+#             vertical_factor=ctx.cfg.downsample_factor,
+#             original_length=ctx.cfg.original_height,
+#         )
+#         for e in lines
+#     ]
+#     (
+#         ctx.rpe_raw,
+#         ctx.rpe_guided,
+#         ctx.rpe_guided_tube_smoothed,
+#         ctx.rpe_smooth,
+#     ) = upsampled
+#     return ctx
 
-    lines = [
-        ctx.rpe_raw,
-        ctx.rpe_guided,
-        ctx.rpe_guided_tube_smoothed,
-        rpe_smooth,
-    ]
-    upsampled = [
-        suf.upsample_path(
-            e,
-            vertical_factor=ctx.cfg.downsample_factor,
-            original_length=ctx.cfg.original_height,
-        )
-        for e in lines
-    ]
-    (
-        ctx.rpe_raw,
-        ctx.rpe_guided,
-        ctx.rpe_guided_tube_smoothed,
-        ctx.rpe_smooth,
-    ) = upsampled
+def step_rpe_upsample(ctx: RPEContext) -> RPEContext:
+    """Upsample whatever RPE-ish paths exist on ctx back to original height."""
+    names = ["rpe_raw", "rpe_guided", "rpe_guided_tube_smoothed", "rpe_smooth"]
+
+    for name in names:
+        if hasattr(ctx, name):
+            e = getattr(ctx, name)
+            if e is None:
+                continue
+            setattr( ctx, name,
+                suf.upsample_path( e, vertical_factor=ctx.cfg.downsample_factor, original_length=ctx.cfg.original_height,),
+            )
     return ctx
-
 # def step_rpe_highres_diff_and_tube(ctx: RPEContext) -> RPEContext:
 #     which_smoother = ctx.highres_cfg['which_smoother']
 #     if which_smoother == "rpe_smooth":
@@ -1091,6 +1269,7 @@ class helperFunctions(object):
 #---------------------
 def step_rpe_highres_DP_two_layer(ctx: RPEContext) -> RPEContext:
     """
+    This is the real function!
     Debug step: run 2-surface DP sweeps on a band around the flattened line,
     visualize in ArrayBoard.
     """
@@ -1199,14 +1378,28 @@ def step_rpe_endpoint_plot(ctx: RPEContext) -> RPEContext:
     AB.add(ctx.hypersmoother_params.coarse_hypersmoothed_img,title="hypersmooth_coarse")
     AB.add(ctx.hypersmoothed_img,title="hypersmoothed_img")
     AB.add(ctx.downsampled_img,title="downsampled_img")
-    AB.add(ctx.peak_suppressed,title="original_peak_suppressed")
+    if ctx.enh_f is not None:
+        AB.add(ctx.enh_f,title="enh_f")
+    if ctx.enh is not None:
+        AB.add(ctx.enh,title="enh_diff (pre suppressed)")
+    if hasattr(ctx,'original_peak_suppressed') and ctx.original_peak_suppressed is not None:
+        print("also plotting the original peak suppressed")
+        AB.add(ctx.original_peak_suppressed,title="original peak_suppresed")
     AB.add(ctx.peak_suppressed,title="peak_suppressed")
-    AB.add(ctx.prob,title="prob")
-    AB.add(ctx.edge,title="edge")
-    AB.add(ctx.guided_cost_raw,title="guided_cost_raw")
-    AB.add(ctx.guided_cost_raw_tube_smoothed,title="guided_cost_raw_tube_smoothed")
+    if hasattr(ctx,'rpe_enh_DP_cost_raw') and ctx.rpe_enh_DP_cost_raw is not None: 
+        AB.add(ctx.rpe_enh_DP_cost_raw,title="rpe_enh_DP_cost_raw")
+    if hasattr(ctx,'prob') and ctx.prob is not None:
+        AB.add(ctx.prob,title="prob")
+    if hasattr(ctx,'edge') and ctx.edge is not None:
+        AB.add(ctx.edge,title="edge")
+    if hasattr(ctx,'guided_cost_raw') and ctx.guided_cost_raw is not None:
+        AB.add(ctx.guided_cost_raw,title="guided_cost_raw")
+    if hasattr(ctx,'guided_cost_raw_tubed_smoothed') and ctx.guided_cost_raw_tubed_smoothed is not None:
+        AB.add(ctx.guided_cost_raw_tube_smoothed,title="guided_cost_raw_tube_smoothed")
     AB.add(ctx.original_image,lines = {"hypersmoothed":ctx.hypersmoother_params.hypersmoother_path, "rpe_smooth":ctx.rpe_smooth},title="original with rpe_smooth")
     # now the highres stuff
+    if not hasattr(ctx.highres_ctx,'diff_down_up') or ctx.highres_ctx.diff_down_up is None:
+        raise Exception("We are intentionally terminating rpe plotting early as it appears the highres pipeline was not actually run")
     AB.add(ctx.highres_ctx.diff_down_up,title="buggy highfreq_diff_down_up")
     AB.add(ctx.highres_ctx.lower_edge_of_tubed,title="lower_edge_of_tubed")
     if hasattr(ctx,'highres_suppressed'): # A logged history version
@@ -1243,8 +1436,9 @@ def step_rpe_endpoint_plot(ctx: RPEContext) -> RPEContext:
                                         "rpe_smooth2":ctx.highres_ctx.rpe_smooth2,
                                         },title="Original with two-layer lines")
     AB.render()
-    raise Exception("endpoint plotting complete. Terminating here!")
-    # return ctx
+    # raise Exception("endpoint plotting complete. Terminating here!")
+    return ctx
+
     
 
 
@@ -1759,8 +1953,19 @@ def step_rpe_highres_grad_testing(ctx: RPEContext) -> RPEContext:
 #  ILM step_ functions
 # -----------------------------
 
+def step_ilm_hypersmoother(ctx: ILMContext) -> ILMContext:
+    """run the big coarse smoother as inital preprocess. if using this you have to unsmooth at the end, which is why we store the hypersmooth line. We also adjust the ilm line"""
+    ctx.hypersmoother_params.coarse_hypersmoothed_img,ctx.hypersmoother_params.hypersmoother_path,ctx.hypersmoother_params.hypersmoother_y_dp = suf.rpe_hypersmoother_DP(ctx.original_image,ds_x=8,ds_y=8)
+    ctx.hypersmoothed_img,ctx.hypersmoother_params.hypersmoother_shift_y_full,ctx.hypersmoother_params.hypersmoother_target_y = suf.flatten_to_path(ctx.original_image,ctx.hypersmoother_params.hypersmoother_path)
+    return ctx
+
+
 def step_ilm_downsample_and_preprocess(ctx: ILMContext) -> ILMContext:
-    ctx.img = ctx.original_image.copy()
+    if ctx.hypersmoothed_img is not None:
+        ctx.img = ctx.hypersmoothed_img.copy()
+    else:
+        print("using the old step_ilm_downsample_and_preprocess where we directly downsampling the original image")
+        ctx.img = ctx.original_image.copy()
     # print(f"ILM: shape of img coming in is {ctx.img.shape}")
 
     d_vertical = ctx.cfg.horizontal_factor   # preserve your original semantics
@@ -1770,12 +1975,12 @@ def step_ilm_downsample_and_preprocess(ctx: ILMContext) -> ILMContext:
     ctx.d_horizontal = float(d_horizontal)
 
     if d_vertical is not None or d_horizontal is not None:
-        ctx.img = cv2.resize(
-            ctx.img,
-            (0, 0),
-            fx=1.0 / d_horizontal,
-            fy=1.0 / d_vertical,
-        )
+        ctx.img = cv2.resize( ctx.img, (0, 0), fx=1.0 / d_horizontal, fy=1.0 / d_vertical,)
+        if ctx.ONH_region is not None:
+            if hasattr(ctx.ONH_region, "compute"):
+                ctx.ONH_region = ctx.ONH_region.compute()
+            ctx.ONH_region = cv2.resize( ctx.ONH_region, (0, 0), fx=1.0 / d_horizontal, fy=1.0 / d_vertical,)
+
 
     downsampled_img = ctx.img.astype(np.float32)
     ctx.img = gaussian_filter(downsampled_img, sigma=5)
@@ -1801,6 +2006,17 @@ def step_ilm_compute_enhancement(ctx: ILMContext) -> ILMContext:
         k_cols=k_cols,
     )
     ctx.enh = images["diff"]
+
+    return ctx
+
+def step_ilm_peak_suppression(ctx: ILMContext) -> ILMContext:
+    """applies peak suppression below first peak. Will be questionable in cases of """
+    # AB = spu.ArrayBoard(plt_display=False,save_tag=f'ilm peak suppression test')
+    # for sf in [0,0.3,0.5]:
+    ctx.peak_suppressed = suf.peakSuppressor.peak_suppression_pipeline(ctx.enh,ctx.enh,ilm_line=None,use_third_peak=False,
+                                                suppression_factor=0.1,)
+        # AB.add(peak_suppressed,title=f'suppression_factor = {sf}')
+    # AB.render()
     return ctx
 
 
@@ -1857,17 +2073,222 @@ def step_ilm_tube_smoother(ctx: ILMContext) -> ILMContext:
     ctx.ilm_tube_cost_raw = tube_cost_raw
     return ctx
 
+def step_ilm_DP_debug(ctx: ILMContext) -> ILMContext:
+    """2/27/26, to follow after some basic peak suppression, to run the ILM"""
+    inv_cost = suf.normalize_image(ctx.peak_suppressed,zero_min=True)
+    cost = 1-inv_cost
+    cost = suf.modify_cost_with_ONH_info(cost,ctx.ONH_region,ONH_value_factor=0.5)
+
+    AB = spu.ArrayBoard(plt_display=False,save_tag=f"DP ILM testing for ID = {ctx.ID}")
+    AB.add(ctx.original_image,title=f'original_image')
+    AB.add(ctx.enh,title=f'pre-peak-suppressed')
+    AB.add(inv_cost,title=f'inv_cost (post peak sup)')
+    AB.add(cost,title=f'cost')
+
+    # AB.add(inv_cost_thinline,title=f'inv_cost_thinline (post peak sup)')
+    # AB.add(cost_thinline,title=f'cost_thinline')
+
+
+    def loop_contents(combo):
+        # Bcs,barrier = suf.calculate_darkness_barrier_and_Bcs(cost,combo.get('t',None))
+        # if combo.get('norm_mode') == 'columnwise':
+
+        if combo['cost_name'] == 'cost':
+            cost_in = cost
+        elif combo['cost_name'] == "cost_thinline":
+            inv_cost_thinline = suf._normalized_axial_gradient(inv_cost.copy(),vertical_kernel_size=combo['vks'],dark2bright=False) # This should be moved to config if it's swept ever, but really just sharpens the bottom edge. 
+            cost_thinline = 1-inv_cost_thinline
+            cost_in = suf.modify_cost_with_ONH_info(cost_thinline,ctx.ONH_region,ONH_value_factor=0.5)
+        else:
+            raise Exception("filed to supply proper cost name")
+        norm_cost = suf.normalize_image_per_column(cost_in.copy())
+        # else:
+            # norm_cost = cost.copy()
+        Bcs,barrier = suf.calculate_darkness_barrier_and_Bcs(norm_cost,t=combo.get('t',None),p=combo['p'])
+        # DP_path,_ = suf.run_DP_on_cost_matrix(cost_in,max_step=3,lambda_step=combo['l'],ONH_region=ctx.ONH_region,lambda_step_in_ONH_region=0.001,dbf=combo['dbf'],Bcs=Bcs)
+        DP_path,_ = suf.run_DP_on_cost_matrix(cost_in,max_step=3,lambda_step=0.01,ONH_region=ctx.ONH_region,lambda_step_in_ONH_region=0.001,dbf=combo['dbf'],Bcs=Bcs)
+        return DP_path,barrier,combo,cost_in
+
+    combos=[]
+    # for norm_mode in ['columnwise']:
+    # for name,cost in ['columnwise']:
+    for cost_name in ["cost","cost_thinline"]:
+        for vks in [4,12,25]:
+            # for l in [0.01]:
+            for dbf in [5]:
+                # for alpha in [2,8]:
+                for t in [0.6]:
+                    # for p in [0.1,1]:
+                    for p in [1]:
+                # combos.append({'l':l,'dbf':dbf,'alpha':alpha})
+                    # combos.append({"norm_mode":norm_mode,'l':l,'dbf':dbf,'t':t,'p':p})
+                        combos.append({"cost_name":cost_name,'dbf':dbf,'t':t,'p':p,'vks':vks})
+
+    results = Parallel(n_jobs=8)(delayed(loop_contents)(c) for c in combos)
+    for r in results:
+        AB.add(r[1],title=f'barrier raw for {r[2]}')
+        AB.add(1-r[-1],lines={"DP_path":r[0]},title=fill(f'1-cost for {r[2]}',width=25))
+    AB.render()
+    raise Exception
+
+
+# def step_ilm_DP(ctx: ILMContext) -> ILMContext:
+#     """2/27/26, to follow after some basic peak suppression, to run the ILM"""
+#     t = 0.6
+#     # t = 0.6
+#     p=1
+#     dbf=5
+#     lambda_step=0.01
+
+#     inv_cost1 = suf.normalize_image(ctx.peak_suppressed,zero_min=True)
+#     thinline_inv_cost = suf._normalized_axial_gradient(inv_cost1,vertical_kernel_size=4,dark2bright=True) # This should be moved to config if it's swept ever, but really just sharpens the bottom edge. 
+#     for name,inv_cost in [("DP",inv_cost1),("DP_thinline",thinline_inv_cost)]:
+#         cost = 1-inv_cost
+#         cost = suf.modify_cost_with_ONH_info(cost,ctx.ONH_region,ONH_value_factor=0.5)
+#         norm_cost = suf.normalize_image_per_column(cost)
+#         Bcs,barrier = suf.calculate_darkness_barrier_and_Bcs(norm_cost,t=t,p=p)
+#         DP_path,_ = suf.run_DP_on_cost_matrix(cost,max_step=3,lambda_step=lambda_step,ONH_region=ctx.ONH_region,lambda_step_in_ONH_region=0.001,dbf=dbf,Bcs=Bcs)
+
+#         setattr(ctx,f"{name}_darkness_barrier_img",barrier)
+#         setattr(ctx,f"final_{name}_cost",cost)
+#         if name == "DP":
+#             ctx.ilm_smooth = DP_path
+#         else:
+#             ctx.ilm_smooth_thinline = DP_path
+#     return ctx
+
+def step_ilm_ax_grad_thinner(ctx: ILMContext) -> ILMContext:
+    """thin out the otherwise overlapping features"""
+    inv_cost = suf.normalize_image(ctx.peak_suppressed,zero_min=True)
+    thinline_inv_cost = suf._normalized_axial_gradient(inv_cost,vertical_kernel_size=12,dark2bright=False) # This should be moved to config if it's swept ever, but really just sharpens the bottom edge. 
+
+    ctx.inv_cost = inv_cost
+    ctx.thinline_inv_cost = thinline_inv_cost
+    return ctx
+
+def step_ilm_DP(ctx: ILMContext) -> ILMContext:
+    """2/27/26, to follow after some basic peak suppression, to run the ILM"""
+    t = 0.6
+    # t = 0.6
+    p=1
+    dbf=5
+    lambda_step=0.01
+    
+    cost = 1-ctx.thinline_inv_cost
+    cost = suf.modify_cost_with_ONH_info(cost,ctx.ONH_region,ONH_value_factor=0.5)
+    norm_cost = suf.normalize_image_per_column(cost)
+    Bcs,barrier = suf.calculate_darkness_barrier_and_Bcs(norm_cost,t=t,p=p)
+    DP_path,_ = suf.run_DP_on_cost_matrix(cost,max_step=3,lambda_step=lambda_step,ONH_region=ctx.ONH_region,lambda_step_in_ONH_region=0.001,dbf=dbf,Bcs=Bcs)
+
+    ctx.final_DP_darkness_barrier_img = barrier
+    ctx.final_DP_cost = cost
+    ctx.ilm_raw = DP_path
+    return ctx
+
+def step_ilm_DP_refiner(ctx: ILMContext) -> ILMContext:
+    """should latch back on by selecting the real ILM instead of upshifting. bring back in the pre-thinned peak_suppressed img, which will grab proper region, but guide by the thin-lined result"""
+    t = 0.6
+    p=1
+    dbf=5
+    lambda_step=0.01
+    
+    ctx.DP_refining_tube = suf.apply_gaussian_tube_mul(ctx.inv_cost,guide_y=ctx.ilm_raw,sigma=20,gain=1)
+    cost = 1 - ctx.DP_refining_tube
+    cost = suf.modify_cost_with_ONH_info(cost,ctx.ONH_region,ONH_value_factor=0.5)
+    DP_path,_ = suf.run_DP_on_cost_matrix(cost,max_step=3,lambda_step=lambda_step,ONH_region=ctx.ONH_region,lambda_step_in_ONH_region=0.001)
+    ctx.ilm_smooth = DP_path
+    return ctx
+
+
+
+# def step_ilm_upsample(ctx: ILMContext) -> ILMContext:
+#     ilm_raw, ilm_smooth = [
+#         suf.upsample_path(
+#             e,
+#             vertical_factor=ctx.cfg.vertical_factor,
+#             original_length=ctx.cfg.original_height,
+#         )
+#         for e in [ctx.ilm_raw, ctx.ilm_smooth]
+#     ]
+#     ctx.ilm_raw = ilm_raw
+#     ctx.ilm_smooth = ilm_smooth
+#     return ctx
 
 def step_ilm_upsample(ctx: ILMContext) -> ILMContext:
-    ilm_raw, ilm_smooth = [
-        suf.upsample_path(
-            e,
+    """
+    Upsample whichever ILM paths are present on ctx (ilm_raw and/or ilm_smooth).
+    If an attribute is missing or None, it's left as-is.
+    """
+    for attr in ("ilm_raw", "ilm_smooth"):
+        v = getattr(ctx, attr, None)
+        if v is None:
+            continue
+        v_up = suf.upsample_path(
+            v,
             vertical_factor=ctx.cfg.vertical_factor,
             original_length=ctx.cfg.original_height,
         )
-        for e in [ctx.ilm_raw, ctx.ilm_smooth]
-    ]
-    ctx.ilm_raw = ilm_raw
-    ctx.ilm_smooth = ilm_smooth
+        setattr(ctx, attr, v_up)
     return ctx
 
+def step_ilm_unsmooth(ctx: ILMContext) -> ILMContext:
+    """Undo hypersmoothing warp for whatever lines exist (and ILM if present)."""
+    names = ["ilm_raw", "ilm_smooth"]
+
+    shift = ctx.hypersmoother_params.hypersmoother_shift_y_full
+    for name in names:
+        if not hasattr(ctx, name):
+            continue
+        line = getattr(ctx, name)
+        if line is None:
+            continue
+        # optional logging if your ctx has it
+        if hasattr(ctx, "log_history") and callable(getattr(ctx, "log_history")):
+            ctx.log_history(f"flat_{name}", line.copy())
+        setattr(
+            ctx,
+            name,
+            suf.warp_line_by_shift(line, shift, direction="to_orig"),
+        )
+    return ctx
+
+
+def step_ilm_endpoint_plot(ctx: ILMContext) -> ILMContext:
+    """do some plotting to summarize the pathway"""
+    AB = spu.ArrayBoard(skip=False,plt_display=False,save_tag=f"final_ILM_plot_step_{ctx.ID}")
+    AB.add(ctx.original_image,title="original")
+    AB.add(ctx.hypersmoother_params.coarse_hypersmoothed_img,title="coarse hypersmoothed image")
+    AB.add(ctx.hypersmoothed_img,title="hypersmoothed_img")
+    # AB.add(ctx.original_image,lines={'hypersmoothed':ctx.hypersmoother_params.hypersmoother_path},title="original")
+    AB.add(ctx.img,title="downsampled and smoothed")
+    AB.add(ctx.enh,title="enh_diff")
+    # AB.add(ctx.downsampled_img,title="downsampled_img")
+    # AB.add(ctx.enh,title="enh_diff (pre suppressed)")
+    if hasattr(ctx,'edge_raw') and ctx.edge_raw is not None:
+        AB.add(ctx.edge_raw,title="edge raw")
+    if hasattr(ctx,'edge') and ctx.edge is not None:
+        AB.add(ctx.edge,title="edge")
+    # AB.add(ctx.img,lines={'ilm_raw':ctx.ilm_raw},title='downsampled + ilm raw')
+    # AB.add(ctx.ilm_tube_cost_DP_path,title='ilm_tube_cost_DP_path')
+    # AB.add(ctx.ilm_tube_cost_raw,title='ilm_tube_cost_raw')
+    # AB.add(ctx.original_image,lines = {'ilm_raw':ctx.ilm_raw,'ilm_smooth':ctx.ilm_smooth},title='raw and smooth ilms')
+    if ctx.inv_cost is not None:
+        AB.add(ctx.inv_cost,title='inv_cost')
+    if ctx.thinline_inv_cost is not None:
+        AB.add(ctx.thinline_inv_cost,title='thinline (real used) inv_cost')
+    if ctx.penultimate_DP_cost is not None:
+        AB.add(ctx.penultimate_DP_cost,title='penultimate DP cost')
+    if ctx.penultimate_DP_darkness_barrier_img is not None:
+        AB.add(ctx.penultimate_DP_darkness_barrier_img,title='penultimate_DP_darkness_barrier_img')
+
+    if ctx.DP_refining_tube is not None:
+        AB.add(ctx.DP_refining_tube,title='DP_refining_tube')
+    if ctx.DP_final_cost is not None:
+        AB.add(ctx.DP_final_cost,title='DP_final_cost')
+
+    AB.add(ctx.original_image,lines = {'ilm_raw':ctx.ilm_raw,'ilm_smooth':ctx.ilm_smooth},title='ilms')
+    # AB.add(ctx.original_image,lines = {'ilm_smooth':ctx.ilm_smooth,'ilm_smooth_thinline':ctx.ilm_smooth_thinline},title='normal and thinline ilms')
+    AB.render()
+    # raise Exception("endpoint plotting complete. Terminating here!")
+    return ctx
+    #ef step_ILM_terminal_plot

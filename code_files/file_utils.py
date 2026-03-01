@@ -172,7 +172,10 @@ def curves_to_label_vol( # MAY NEED REWRITING.
     return lbl
 
 def get_corresponding_layer_path(vol_path,file_suffix = '.npy', dir_suffix = "_processed"):
-    """input is a posix path"""
+    """input is a posix path. 
+    Feb 2026 update: would usually have done like a dir_suffix = '_processed', but want to be able to just pass abs path in.
+    Woud change to acept annotation dir and igrnoe th edir_suffix 
+    """
     vol_dir = vol_path.parent
     # Now it's possible we might use the mini versions, but still need to access the same layers names
     processed_dir = vol_dir.with_name(vol_dir.name.strip("_mini").strip("_full") + dir_suffix)

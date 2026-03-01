@@ -4,17 +4,17 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))  # adds Han_AIR/ to pa
 import code_files.segmentation_code.segmentation_step_functions as ssf
 from typing import List
 
-RPE_STEPS_12_5_25: List[ssf.RPEStepFn] = [
-    ssf.step_rpe_downsample_and_preprocess,
-    ssf.step_rpe_compute_enhancement,
-    ssf.step_rpe_peak_suppression,
-    ssf.step_rpe_seed_selection,
-    ssf.step_rpe_paths_prob_edge,
-    ssf.step_rpe_extract_rpe_raw_and_margin,
-    ssf.step_rpe_guided_dp,
-    ssf.step_rpe_tube_smoother,
-    ssf.step_rpe_smooth_and_upsample,
-]
+# RPE_STEPS_12_5_25: List[ssf.RPEStepFn] = [
+#     ssf.step_rpe_downsample_and_preprocess,
+#     ssf.step_rpe_compute_enhancement,
+#     ssf.step_rpe_peak_suppression,
+#     ssf.step_rpe_seed_selection,
+#     ssf.step_rpe_paths_prob_edge,
+#     ssf.step_rpe_extract_rpe_raw_and_margin,
+#     ssf.step_rpe_guided_dp,
+#     ssf.step_rpe_tube_smoother,
+#     ssf.step_rpe_upsample,
+# ]
 
 ILM_STEPS_12_5_25 : List[ssf.ILMStepFn] = [
     ssf.step_ilm_downsample_and_preprocess,
@@ -59,7 +59,7 @@ RPE_STEPS_12_6_25: List[ssf.RPEStepFn] = [
     ssf.step_rpe_extract_rpe_raw_and_margin,
     ssf.step_rpe_guided_dp,
     ssf.step_rpe_tube_smoother,
-    ssf.step_rpe_smooth_and_upsample,
+    ssf.step_rpe_upsample,
 ]
 
 PICKLE_CTX = False
@@ -107,7 +107,7 @@ RPE_STEPS_1_3_26: List[ssf.RPEStepFn] = [
     ssf.step_rpe_guided_dp,
     ssf.step_rpe_tube_smoother,
     # ssf.ckpt(ssf.step_rpe_smooth_and_upsample,overwrite=False), # Checkpoint here
-    ssf.ckpt(ssf.step_rpe_smooth_and_upsample,overwrite=False,save_by_ID=True),
+    ssf.ckpt(ssf.step_rpe_upsample,overwrite=False,save_by_ID=True),
     # ssf.ckpt(ssf.step_rpe_smooth_and_upsample,overwrite=True),# Checkpoint here
     ssf.step_rpe_highres_flat_guided,
     # ssf.step_rpe_unsmooth,
@@ -117,15 +117,16 @@ RPE_STEPS_1_3_26: List[ssf.RPEStepFn] = [
 # print(f"RPE_STEPS_1_3_26 is equal to {RPE_STEPS_1_3_26}")
 
 
-def process_bscan_1_3_26(idx_and_img,production_mode,rpe_seg_steps):
+def process_bscan_1_3_26(idx_and_img,production_mode,rpe_seg_steps,ilm_seg_steps=ILM_STEPS_12_5_25):
     """The only change is I'm passing in the full res ilm_raw and downsampling it later during the appropriate downsmpling step (y only for now)"""
     idx, bscan,ONH_info,work_id = idx_and_img
     ilm_config = ssf.ILMConfig()
     ilm_ctx = ssf.ILMContext(idx = idx,
+                                ID=work_id,
                     original_image=bscan.copy(),
                     ONH_region=ONH_info,
                     cfg=ilm_config)
-    ilm_ctx = ssf.run_pipeline(ilm_ctx,steps=ILM_STEPS_12_5_25)
+    ilm_ctx = ssf.run_pipeline(ilm_ctx,steps=ilm_seg_steps)
 
     rpe_config = ssf.RPEConfig()
     highres_rpe_config = ssf.HighResConfig()
@@ -155,6 +156,8 @@ def process_bscan_1_3_26(idx_and_img,production_mode,rpe_seg_steps):
 
 
 
+
+
 RPE_HIGHRES_STEPS_1_14_26: List[ssf.RPEStepFn] = [
     ssf.step_rpe_highres_diff_enh,
     ssf.step_rpe_highres_peak_suppress_to_rpe_refined,
@@ -173,7 +176,7 @@ RPE_STEPS_1_14_26: List[ssf.RPEStepFn] = [
     ssf.step_rpe_guided_dp,
     ssf.step_rpe_tube_smoother,
     # ssf.ckpt(ssf.step_rpe_smooth_and_upsample,overwrite=False,save_by_ID=True),
-    ssf.ckpt(ssf.step_rpe_smooth_and_upsample,overwrite=True,save_by_ID=True),
+    ssf.ckpt(ssf.step_rpe_upsample,overwrite=True,save_by_ID=True),
     # ssf.step_rpe_smooth_and_upsample,
 ] + RPE_HIGHRES_STEPS_1_14_26 + [ ssf.step_rpe_unsmooth,]
 
@@ -191,7 +194,7 @@ RPE_STEPS_1_25_26: List[ssf.RPEStepFn] = [
     ssf.step_rpe_extract_rpe_raw_and_margin,
     ssf.step_rpe_guided_dp,
     ssf.step_rpe_tube_smoother,
-    ssf.step_rpe_smooth_and_upsample,
+    ssf.step_rpe_upsample,
     # ssf.ckpt(ssf.step_rpe_unsmooth,overwrite=False,save_by_ID=True),
     ssf.step_rpe_unsmooth,
 ] + [ssf.step_rpe_highres_smooth]  + RPE_HIGHRES_STEPS_1_14_26 + [ssf.step_rpe_highres_unsmooth ]
@@ -212,7 +215,7 @@ RPE_STEPS_2_2_26: List[ssf.RPEStepFn] = [
     ssf.step_rpe_extract_rpe_raw_and_margin,
     ssf.step_rpe_guided_dp,
     ssf.step_rpe_tube_smoother,
-    ssf.step_rpe_smooth_and_upsample,
+    ssf.step_rpe_upsample,
     ssf.step_rpe_unsmooth,
     ssf.step_rpe_highres_smooth,
     ssf.step_rpe_highres_diff_enh,
@@ -242,7 +245,7 @@ RPE_STEPS_2_10_26: List[ssf.RPEStepFn] = [ # Exploring the addition of a horizon
     ssf.step_rpe_extract_rpe_raw_and_margin,
     ssf.step_rpe_guided_dp,
     ssf.step_rpe_tube_smoother,
-    ssf.step_rpe_smooth_and_upsample,
+    ssf.step_rpe_upsample,
     ssf.step_rpe_unsmooth,
     ssf.step_rpe_highres_smooth,
     ssf.step_rpe_highres_diff_enh,
@@ -269,7 +272,7 @@ RPE_STEPS_2_11_26: List[ssf.RPEStepFn] = [ # Exploring the addition of a horizon
     ssf.step_rpe_extract_rpe_raw_and_margin,
     ssf.step_rpe_guided_dp,
     ssf.step_rpe_tube_smoother,
-    ssf.step_rpe_smooth_and_upsample,
+    ssf.step_rpe_upsample,
     ssf.step_rpe_unsmooth,
     ssf.step_rpe_highres_smooth,
     ssf.step_rpe_highres_diff_enh,
@@ -294,7 +297,7 @@ RPE_STEPS_2_12_26: List[ssf.RPEStepFn] = [ # Exploring the addition of a horizon
     ssf.step_rpe_extract_rpe_raw_and_margin,
     ssf.step_rpe_guided_dp,
     ssf.step_rpe_tube_smoother,
-    ssf.step_rpe_smooth_and_upsample,
+    ssf.step_rpe_upsample,
     ssf.step_rpe_unsmooth,
     ssf.step_rpe_highres_smooth,
     ssf.step_rpe_highres_diff_enh,
@@ -318,3 +321,110 @@ RPE_STEPS_2_14_26 = ssf.filter_pipeline(RPE_STEPS_2_14_26 )
 
 RPE_STEPS_2_14_26_debug  = RPE_STEPS_2_12_26[:-3] + [ssf.ckpt(ssf.step_rpe_highres_higher_res_gradient_guided_DP_to_rpe_refined2,overwrite=True,save_by_ID=True),ssf.step_rpe_highres_DP2_debug]
 RPE_STEPS_2_14_26_debug  = ssf.filter_pipeline(RPE_STEPS_2_14_26_debug  )
+
+
+
+# Trialing this after it seems the seed and grab bottom line approach is actually too fragile. 
+# Key logic is that all the rpe_smooth does (low-res pathway) is flatten for the highres. when it goes into choroid, it pulls the choroid up into a flat segment, and keeps it indefinitely for the highres path
+# As it is never actually used to guide subsequent steps, it wouldn't be an issue if it were localized higher or lower. I suspect either grabbing top of the ctx.enh via another gradient, oor grabbing brightest path thru will
+#be better and avoid grabbing RPE. The key is we don't actually need to grab the lowest line right away, and instead flattening better allows us to sweep away the choroidal texture
+RPE_STEPS_2_27_26: List[ssf.RPEStepFn] = [ # Exploring the addition of a horizontal gradient
+    ssf.step_rpe_init_working,
+    ssf.step_rpe_hypersmoother,
+    ssf.step_rpe_downsample_and_preprocess,
+    ssf.step_rpe_compute_enhancement,
+    ssf.step_rpe_peak_suppression,
+    ssf.ckpt(ssf.step_rpe_recalculate_single_seeded_and_reseed,overwrite=True,save_by_ID=True), # getting rd of this might be a problem, as this effectively unsuppresses some over-suppressed peaks
+    ssf.step_rpe_DP_on_enh_1,
+
+    ssf.step_rpe_upsample,
+    ssf.step_rpe_unsmooth,
+    ssf.step_rpe_highres_smooth,
+    ssf.step_rpe_highres_diff_enh,
+    ssf.step_rpe_highres_peak_suppress_to_rpe_refined,
+    ssf.step_rpe_highres_higher_res_gradient_guided_DP_to_rpe_refined2,
+    # ssf.step_rpe_highres_DP2, # Will terminate here
+    # ssf.step_rpe_highres_higher_res_gradient_guided_DP_to_rpe_refined2
+    # ssf.step_rpe_highres_DP2,
+    # ssf.ckpt(ssf.step_rpe_highres_DP_two_layer,overwrite=False,save_by_ID=True),
+    ssf.step_rpe_highres_DP_two_layer,
+    ssf.step_rpe_highres_unsmooth,
+    ssf.step_rpe_endpoint_plot
+    # ssf.step_rpe_paths_prob_edge, # this is the real logic we are replacing
+    # ssf.step_rpe_extract_rpe_raw_and_margin, # also gtting replaced
+    # ssf.step_rpe_guided_dp, #This is what gets rid of big jumps where the lowest line goes way too low to S.C. junction
+    # ssf.step_rpe_tube_smoother, #this then runs in the original image space, seeking bright line
+    # ssf.step_rpe_smooth_and_upsample,
+    # ssf.step_rpe_unsmooth,
+    # ssf.step_rpe_highres_smooth,
+    # ssf.step_rpe_highres_diff_enh,
+    # ssf.step_rpe_highres_peak_suppress_to_rpe_refined,
+    # ssf.step_rpe_highres_higher_res_gradient_guided_DP_to_rpe_refined2,
+    # # ssf.step_rpe_highres_DP2, # Will terminate here
+    # # ssf.step_rpe_highres_higher_res_gradient_guided_DP_to_rpe_refined2
+    # # ssf.step_rpe_highres_DP2,
+    # # ssf.ckpt(ssf.step_rpe_highres_DP_two_layer,overwrite=False,save_by_ID=True),
+    # ssf.step_rpe_highres_DP_two_layer,
+    # ssf.step_rpe_highres_unsmooth,
+    # ssf.step_rpe_endpoint_plot,
+]
+RPE_STEPS_2_27_26 = ssf.filter_pipeline(RPE_STEPS_2_27_26 )
+
+ILM_STEPS_2_27_26 : List[ssf.ILMStepFn] = [
+    ssf.step_ilm_downsample_and_preprocess,
+    ssf.step_ilm_compute_enhancement,
+    ssf.step_ilm_seed_detection,
+    ssf.step_ilm_edge_impute,
+    ssf.step_ilm_extract_raw,
+    ssf.step_ilm_tube_smoother,
+    ssf.step_ilm_upsample,
+    ssf.step_ilm_endpoint_plot,
+]
+ILM_STEPS_2_27_26_take2 : List[ssf.ILMStepFn] = [
+    ssf.step_ilm_hypersmoother,
+    ssf.step_ilm_downsample_and_preprocess,
+    ssf.step_ilm_compute_enhancement,
+    ssf.step_ilm_peak_suppression,
+    ssf.step_ilm_ax_grad_thinner,
+    ssf.step_ilm_DP,
+    ssf.step_ilm_DP_refiner,
+    # ssf.step_ilm_DP_debug,
+    ssf.step_ilm_upsample,
+    ssf.step_ilm_unsmooth,
+    ssf.step_ilm_endpoint_plot,
+]
+
+
+# We have a superiorly promising result above. Now -- add in some DBF wtih per column normalization to our initial DP on the enh
+# A bigger fix might be to use the ENH_f with some gentle peak suppression. Here we test this while ignoring the highres for now to save time!
+RPE_STEPS_2_28_26: List[ssf.RPEStepFn] = [ # Exploring the addition of a horizontal gradient
+    ssf.step_rpe_init_working,
+    ssf.step_rpe_hypersmoother,
+    ssf.step_rpe_downsample_and_preprocess,
+    ssf.step_rpe_compute_enhancement2,
+    ssf.step_rpe_DP_on_enh_2,
+    ssf.step_rpe_upsample,
+    ssf.step_rpe_unsmooth,
+
+    ssf.step_rpe_highres_smooth,
+    ssf.step_rpe_highres_diff_enh,
+    ssf.step_rpe_highres_peak_suppress_to_rpe_refined,
+    ssf.step_rpe_highres_higher_res_gradient_guided_DP_to_rpe_refined2,
+    ssf.step_rpe_highres_DP_two_layer,
+    ssf.step_rpe_highres_unsmooth,
+    ssf.step_rpe_endpoint_plot,
+]
+RPE_STEPS_2_28_26 = ssf.filter_pipeline(RPE_STEPS_2_28_26 )
+
+ILM_STEPS_2_28 : List[ssf.ILMStepFn] = [
+    ssf.step_ilm_hypersmoother,
+    ssf.step_ilm_downsample_and_preprocess,
+    ssf.step_ilm_compute_enhancement,
+    ssf.step_ilm_peak_suppression,
+    ssf.step_ilm_ax_grad_thinner,
+    ssf.step_ilm_DP,
+    ssf.step_ilm_DP_refiner,
+    ssf.step_ilm_upsample,
+    ssf.step_ilm_unsmooth,
+    ssf.step_ilm_endpoint_plot,
+]
