@@ -96,11 +96,11 @@ def collate_stackable(slice_dicts, keys):
 
 # ---------------------------- IO helpers ----------------------------
 
-def load_vol_and_onh(vol_fp,annotations_root):
+def load_vol_and_onh(vol_fp,annotation_root):
     vol_fp = Path(vol_fp)
     vol = fu.load_ss_volume2(vol_fp, mmap=True)
 
-    onh_path = fu.image_to_annotation_path(vol_fp,annotations_root)
+    onh_path = fu.image_to_annotation_path(vol_fp,annotation_root)
     onh = da.from_zarr(onh_path)
     # if onh.shape != vol.shape:
     #     onh = subsample_volume(onh, vol.shape[0])
@@ -118,7 +118,7 @@ def build_work(vol, onh, z_idx, vol_id):
 
 # ---------------------------- main processing ----------------------------
 
-def process_volume_lite(vol_fp, *, z_step=1, max_workers=8, rpe_steps=None, out_dir=None,annotation_root=None):
+def process_volume_lite(vol_fp, *, z_step=1, max_workers=8, rpe_steps=None,ilm_steps=None, out_dir=None,annotation_root=None):
     vol_fp = Path(vol_fp)
     vol_id = vol_fp.with_suffix("").name
 
@@ -134,10 +134,10 @@ def process_volume_lite(vol_fp, *, z_step=1, max_workers=8, rpe_steps=None, out_
     fn = sp.process_bscan_1_3_26  # must return (idx, ilm_ctx, rpe_ctx) when production_mode=False
 
     if max_workers <= 1:
-        results = [fn(t, False, rpe_steps) for t in work]
+        results = [fn(t, False, rpe_steps,ilm_steps) for t in work]
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futs = [ex.submit(fn, t, False, rpe_steps) for t in work]
+            futs = [ex.submit(fn, t, False, rpe_steps,ilm_steps) for t in work]
             results = [f.result() for f in futs]
 
     results.sort(key=lambda x: x[0])
@@ -168,10 +168,12 @@ def process_volume_lite(vol_fp, *, z_step=1, max_workers=8, rpe_steps=None, out_
     return vol_out
 
 
-def batch_process_dir_lite(ALL_VOL_PATHS, *, 
-                           z_step=1, max_workers=8, rpe_steps=None,
-                           outputs_root=None,
-                           annotation_root=None):
+def batch_process_dir_lite(ALL_VOL_PATHS, rpe_steps,ilm_steps,
+                           outputs_root,
+                           annotation_root,
+                           *, 
+                           z_step=1, max_workers=8, 
+                           ):
     # volumes_root = Path(volumes_root)
     if outputs_root is None:
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -185,7 +187,7 @@ def batch_process_dir_lite(ALL_VOL_PATHS, *,
         out = process_volume_lite(
             vol_path, 
             z_step=z_step, max_workers=max_workers,
-            rpe_steps=rpe_steps, out_dir=outputs_root,
+            rpe_steps=rpe_steps, ilm_steps=ilm_steps,out_dir=outputs_root,
             annotation_root=annotation_root
         )
         print("saved ->", out)
@@ -204,22 +206,25 @@ if __name__ == "__main__":
     parser.add_argument("--z_step", type=int, default=1)
     parser.add_argument("--max_workers", type=int, default=8)
     parser.add_argument("--outputs_root", type=str)
-    parser.add_argument("--annotations_root", type=str)
+    parser.add_argument("--annotation_root", type=str)
     parser.add_argument("--cube_numbers", type=str, default=None)
     args = parser.parse_args()
 
     # STEPS = sp.RPE_STEPS_1_25_26  # swap to your desired list
-    STEPS = sp.RPE_STEPS_2_12_26  # swap to your desired list
+    # STEPS = sp.RPE_STEPS_2_12_26  # swap to your desired list
+    ILM_STEPS = sp.ILM_STEPS_2_28  # swap to your desired list
+    RPE_STEPS = sp.RPE_STEPS_2_28_26  # swap to your desired list
 
     ALL_VOL_PATHS = fu.get_all_vol_paths(args.volumes_root,args.pattern,args.cube_numbers)
     print(f"going to be processing {ALL_VOL_PATHS}")
     batch_process_dir_lite(
         ALL_VOL_PATHS,
+        rpe_steps=RPE_STEPS,
+        ilm_steps=ILM_STEPS,
         z_step=args.z_step,
         max_workers=args.max_workers,
-        rpe_steps=STEPS,
         outputs_root=args.outputs_root,
-        annotation_root=args.annotations_root,
+        annotation_root=args.annotation_root,
     )
 
 
@@ -229,8 +234,7 @@ if __name__ == "__main__":
 
 example run
 
-python code_files/setup_data/02_segment_ILM_RPE.py --volumes_root "/Volumes/msh_uiowa/Research Data/Han_AIR_Dec_2025/data_volumes/data_all_volumes/" --pattern "*.img" --z_step 500 --max_workers 8 --outputs_root /Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_all_volumes_layers_2026_02_12
-
+python code_files/setup_data/02_segment_ILM_RPE.py --volumes_root "/Volumes/msh_uiowa/Research Data/Han_AIR_Dec_2025/data_volumes/data_all_volumes2/" --pattern "*.img" --z_step 750 --max_workers 8 --outputs_root /Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_all_volumes2_layers_2026_02_28 --annotation_root /Users/matthewhunt/Research/Iowa_Research/Han_AIR/annotations_dir/full_annotations_2_19_26
 
 
 """

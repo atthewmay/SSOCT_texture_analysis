@@ -412,7 +412,7 @@ RPE_STEPS_2_28_26: List[ssf.RPEStepFn] = [ # Exploring the addition of a horizon
     ssf.step_rpe_highres_higher_res_gradient_guided_DP_to_rpe_refined2,
     ssf.step_rpe_highres_DP_two_layer,
     ssf.step_rpe_highres_unsmooth,
-    ssf.step_rpe_endpoint_plot,
+    # ssf.step_rpe_endpoint_plot,
 ]
 RPE_STEPS_2_28_26 = ssf.filter_pipeline(RPE_STEPS_2_28_26 )
 
@@ -426,5 +426,5 @@ ILM_STEPS_2_28 : List[ssf.ILMStepFn] = [
     ssf.step_ilm_DP_refiner,
     ssf.step_ilm_upsample,
     ssf.step_ilm_unsmooth,
-    ssf.step_ilm_endpoint_plot,
+    # ssf.step_ilm_endpoint_plot,
 ]
