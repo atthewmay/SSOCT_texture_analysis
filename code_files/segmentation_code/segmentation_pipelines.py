@@ -580,4 +580,3 @@ RPE_STEPS_unified_3_19_26: List[ssf.RPEStepFn] = [ # Exploring the addition of a
     ssf.step_rpe_highres_unsmooth,    # ssf.step_ilm_unsmooth,overwrite=True,save_by_ID=True),
     ssf.step_rpe_vertical_shift_refine, # repeat and save teh computation
 ]
-RPE_STEPS_unified_3_13_26= ssf.filter_pipeline(RPE_STEPS_unified_3_13_26)

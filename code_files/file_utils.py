@@ -537,6 +537,7 @@ def get_all_vol_paths(vol_dir,glob=None,cube_numbers=None,use_skip_yaml=False):
     args should either have a glob or cube number, or maybe both if i refactor as such?"""
 
     if glob:
+        assert cube_numbers is None
         ALL_VOL_PATHS = sorted(Path(vol_dir).glob(glob))
     elif cube_numbers:
         print("trying the cube numbers")

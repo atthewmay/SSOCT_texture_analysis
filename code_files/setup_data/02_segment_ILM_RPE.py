@@ -12,6 +12,7 @@ import dask.array as da
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
+from code_files.segmentation_code.segmentation_step_functions import RPEContext
 import file_utils as fu
 import code_files.segmentation_code.segmentation_pipelines as sp
 
@@ -23,33 +24,39 @@ def extract_lite(ilm_ctx, rpe_ctx):
     hp = rpe_ctx.hypersmoother_params
 
     hr = getattr(rpe_ctx, "highres_ctx", None)
-    tl = getattr(rpe_ctx, "two_layer_dp_ctx", None)
 
-    d = {
-        # ---- final-ish lines you want stackable ----
-        "hypersmoother_path": hp.hypersmoother_path,
-        "rpe_raw": rpe_ctx.rpe_raw,
-        "rpe_smooth": rpe_ctx.rpe_smooth,
-        "ilm_smooth": ilm_ctx.ilm_smooth,
+    d = dict(
+        ## ---- final-ish lines you want stackable ----
+        hypersmoother_path = hp.hypersmoother_path,
+        rpe_raw = rpe_ctx.rpe_raw,
+        rpe_smooth = rpe_ctx.rpe_smooth,
+        ilm_smooth = ilm_ctx.ilm_smooth,
+        #  ----optional refined lines ----
+        rpe_refined1 = hr.rpe_refined,
+        rpe_refined2 = hr.rpe_refined2,
+        rpe_smooth2 = hr.rpe_smooth2,
+        #  ----light params ----
+        #  keepshift if you want resume/unsmooth later
+        hypersmoother_target_y =  hp.hypersmoother_target_y,
+        hypersmoother_shift_y_full =  hp.hypersmoother_shift_y_full,
+        # hypersmoother_target_y = hp.hypersmoother_target_y,
+        highres_smoother_shift_y_full = hp.highres_smoother_shift_y_full,
+        highres_smoother_target_y = hp.highres_smoother_target_y,
 
-        # ---- optional refined lines ----
-        "rpe_refined1": hr.rpe_refined,
-        "rpe_refined2": hr.rpe_refined2,
-        'rpe_smooth2': hr.rpe_smooth2,
+    )
 
-        'y1_rescaled': tl.y1_rescaled,
-        'y2_rescaled': tl.y2_rescaled,
+    tl_names = dict(
+        original_method='two_layer_dp_ctx',
+        choroidal_method = 'two_layer_dp_ctx_choroidal',
+        EZ_method = 'two_layer_dp_ctx_EZ')
+    for n,attr in tl_names.items():
+        tl = getattr(rpe_ctx, attr, None)
 
-        # ---- light params ----
-        # keep shift if you want resume/unsmooth later
-        "hypersmoother_target_y": hp.hypersmoother_target_y,
-        "hypersmoother_shift_y_full": hp.hypersmoother_shift_y_full,
-        "hypersmoother_target_y":hp.hypersmoother_target_y,
+        d[f'{n}_y1_rescaled'] = tl.y1_rescaled,
+        d[f'{n}_y2_rescaled'] = tl.y2_rescaled,
+        d[f'{n}_y1_vertical_shifted'] = tl.y1_vertical_shifted,
+        d[f'{n}_y2_vertical_shifted'] = tl.y2_vertical_shifted,
 
-        "highres_smoother_shift_y_full":hp.highres_smoother_shift_y_full,
-        "highres_smoother_target_y":hp.highres_smoother_target_y,
-
-    }
     return d
 
 
@@ -150,18 +157,41 @@ def process_volume_lite(vol_fp, *, z_step=1, max_workers=8, rpe_steps=None,ilm_s
         _save_npz(vol_out / f"z{z:04d}.npz", d)
         slice_dicts.append((z, d))
 
+    # STACK_KEYS = [
+    #     "hypersmoother_path",
+    #     "rpe_raw",
+    #     "rpe_smooth",
+    #     "ilm_smooth",
+    #     "rpe_refined1",
+    #     "rpe_refined2",
+    #     "rpe_smooth2",
+    #     'y1_rescaled',
+    #     'y2_rescaled',
+    #     # add "rpe_smooth2" if you create it later
+    # ]
+    # Now on 3/19/26 we have the three-fold path. Will keep the rescaled along w/ the shifted as well.
     STACK_KEYS = [
         "hypersmoother_path",
         "rpe_raw",
         "rpe_smooth",
+        "ilm_raw",
         "ilm_smooth",
-        "rpe_refined1",
-        "rpe_refined2",
-        "rpe_smooth2",
-        'y1_rescaled',
-        'y2_rescaled',
-        # add "rpe_smooth2" if you create it later
+
+        'original_method_y1_rescaled',
+        'original_method_y2_rescaled',
+        'original_method_y1_vertical_shifted',
+        'original_method_y2_vertical_shifted',
+        'choroidal_method_y1_rescaled',
+        'choroidal_method_y2_rescaled',
+        'choroidal_method_y1_vertical_shifted',
+        'choroidal_method_y2_vertical_shifted',
+        'EZ_method_y1_rescaled',
+        'EZ_method_y2_rescaled',
+        'EZ_method_y1_vertical_shifted',
+        'EZ_method_y2_vertical_shifted',
     ]
+
+
     stacked = collate_stackable(slice_dicts, STACK_KEYS)
     np.savez_compressed(vol_out / f"{vol_id}_stacked.npz", **stacked)
 
@@ -214,7 +244,8 @@ if __name__ == "__main__":
     # STEPS = sp.RPE_STEPS_1_25_26  # swap to your desired list
     # STEPS = sp.RPE_STEPS_2_12_26  # swap to your desired list
     ILM_STEPS = sp.ILM_STEPS_2_28  # swap to your desired list
-    RPE_STEPS = sp.RPE_STEPS_2_28_26  # swap to your desired list
+    # RPE_STEPS = sp.RPE_STEPS_2_28_26  # swap to your desired list
+    RPE_STEPS = sp.RPE_STEPS_unified_3_19_26  # swap to your desired list
 
     ALL_VOL_PATHS = fu.get_all_vol_paths(args.volumes_root,args.pattern,args.cube_numbers)
     print(f"going to be processing {ALL_VOL_PATHS}")
@@ -235,7 +266,7 @@ if __name__ == "__main__":
 
 example run
 
-python code_files/setup_data/02_segment_ILM_RPE.py --volumes_root "/Volumes/msh_uiowa/Research Data/Han_AIR_Dec_2025/data_volumes/data_all_volumes2/" --pattern "*.img" --z_step 750 --max_workers 8 --outputs_root /Users/matthewhunt/Research/Iowa_Research/Han_AIR/data_volumes/data_all_volumes2_layers_2026_02_28 --annotation_root /Users/matthewhunt/Research/Iowa_Research/Han_AIR/annotations_dir/full_annotations_2_19_26
+python code_files/setup_data/02_segment_ILM_RPE.py --volumes_root /Volumes/T9/iowa_research/Han_AIR_Dec_2025/data_volumes/data_all_volumes2 --pattern "*.img" --z_step 750 --max_workers 8 --outputs_root /Volumes/T9/iowa_research/Han_AIR_Dec_2025/local_layers_dir/test_layers_3_19_26 --annotation_root /Users/matthewhunt/Research/Iowa_Research/Han_AIR/annotations_dir/full_annotations_2_19_26 --cube_numbers 1
 
 
 """
