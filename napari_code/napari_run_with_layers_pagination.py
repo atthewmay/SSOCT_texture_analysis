@@ -198,6 +198,7 @@ def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,layers_root
 
         layers = np.load(layer_path)                      # (Z, W, n_layers) dict-like npz or array
         layers = fu.downsample_layers(layers, (1, 1, 1))  # keep XY native for alignment
+        print(layers)
 
         # lbl_vol = fu.curves_to_label_vol(
         #     layers,

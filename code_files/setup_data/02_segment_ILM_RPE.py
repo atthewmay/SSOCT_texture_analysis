@@ -52,10 +52,10 @@ def extract_lite(ilm_ctx, rpe_ctx):
     for n,attr in tl_names.items():
         tl = getattr(rpe_ctx, attr, None)
 
-        d[f'{n}_y1_rescaled'] = tl.y1_rescaled,
-        d[f'{n}_y2_rescaled'] = tl.y2_rescaled,
-        d[f'{n}_y1_vertical_shifted'] = tl.y1_vertical_shifted,
-        d[f'{n}_y2_vertical_shifted'] = tl.y2_vertical_shifted,
+        d[f'{n}_y1_rescaled'] = tl.y1_rescaled
+        d[f'{n}_y2_rescaled'] = tl.y2_rescaled
+        d[f'{n}_y1_vertical_shifted'] = tl.y1_vertical_shifted
+        d[f'{n}_y2_vertical_shifted'] = tl.y2_vertical_shifted
 
     return d
 
