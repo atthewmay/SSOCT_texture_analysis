@@ -248,45 +248,6 @@ def load_image(path, shape, dtype):
     data = np.fromfile(path, dtype=dtype)
     return data.reshape(shape)
 
-def plot_images_in_folder(folder):
-    """Scan for raw files, load & plot each one."""
-    patterns = ["*.bin", "*.img"]
-    found = []
-    for pat in patterns:
-        found += glob.glob(os.path.join(folder, pat))
-    if not found:
-        print("No .bin or .img files found in", folder)
-        return
-
-    for fp in sorted(found):
-        fn = os.path.basename(fp).split("_")[-1]
-        print(fn)
-        # Determine spec
-        if fn in KNOWN_SPECS:
-            shape, dtype = KNOWN_SPECS[fn]
-        else:
-            # try uint16 by default for .img; adjust if wrong
-            dtype = np.uint16
-            if "hidef" in fp:
-                import pdb; pdb.set_trace()
-            try:
-                shape = infer_square_shape(fp, dtype)
-                print(f"Inferred {shape} for {fn}")
-            except ValueError:
-                print(f"Skipping {fn}: unknown dims and non-square size")
-                continue
-
-        # load & plot
-        print(f"trying fp = {fp}")
-        img = load_image(fp, shape, dtype)
-        plt.figure(figsize=(4,4))
-        plt.imshow(img, cmap="gray", aspect="auto")
-        plt.title(fn)
-        plt.axis("off")
-
-    plt.show()
-
-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -507,31 +468,6 @@ def load_work_from_yaml(yaml_path,headings,images_root=C['images_root'],max_per_
             work_idx += 1 
     return work
 
-
-# from __future__ import annotations
-# from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-# from typing import Callable, Iterable, TypeVar, List, Literal, Optional
-
-# T = TypeVar("T")
-# R = TypeVar("R")
-
-# def parallel_map(
-#     fn: Callable[[T], R],
-#     items: Iterable[T],
-#     *,
-#     mode: Literal["process", "thread", "seq"] = "process",
-#     max_workers: Optional[int] = None,
-#     chunksize: int = 1,          # only used for process/thread via executor.map
-# ) -> List[R]:
-#     items = list(items)
-#     if mode == "seq" or len(items) <= 1:
-#         return [fn(x) for x in items]
-
-#     Executor = ProcessPoolExecutor if mode == "process" else ThreadPoolExecutor
-#     with Executor(max_workers=max_workers) as ex:
-#         # executor.map preserves input order
-#         return list(ex.map(fn, items, chunksize=chunksize))
-
 def get_all_vol_paths(vol_dir,glob=None,cube_numbers=None,use_skip_yaml=False):
     """used in the viewer and also to be used in the 02_.py file. 
     args should either have a glob or cube number, or maybe both if i refactor as such?"""
@@ -568,3 +504,41 @@ def get_all_vol_paths(vol_dir,glob=None,cube_numbers=None,use_skip_yaml=False):
         raise FileNotFoundError(f"No volumes in {vol_dir} matching {glob}")
     return ALL_VOL_PATHS
 
+
+
+def load_training_ids(
+    excel_path,
+    sheet_name=0,
+    id_col="integer_id",
+    split_col="split",
+):
+    """
+    Return training IDs from a workbook that already has a split column.
+    """
+    import pandas as pd
+    df = pd.read_excel(excel_path, sheet_name=sheet_name)
+
+    if id_col not in df.columns:
+        raise ValueError(f"Missing required column: {id_col}")
+    if split_col not in df.columns:
+        raise ValueError(f"Missing required column: {split_col}")
+
+    train_ids = df.loc[df[split_col] == "train", id_col].tolist()
+    return train_ids
+
+
+def load_training_df(
+    excel_path,
+    sheet_name=0,
+    split_col="split",
+):
+    """
+    Return only training rows as a dataframe.
+    """
+    import pandas as pd
+    df = pd.read_excel(excel_path, sheet_name=sheet_name)
+
+    if split_col not in df.columns:
+        raise ValueError(f"Missing required column: {split_col}")
+
+    return df.loc[df[split_col] == "train"].copy()

@@ -204,67 +204,6 @@ def draw_panel(ax, dbg, spec: PanelSpec):
     ax.axis('off')
 
 
-
-# def render_PDF_page(pdf: PdfPages, title: str, dbg_ilm, dbg_rpe, original_line = None):
-#     """Render one page with staged panels for RPE (row 1) and ILM (row 2)."""
-#     # Define panel specs for RPE and ILM
-#     rpe_panels = [
-#         PanelSpec('original_image'),
-#         PanelSpec('hypersmoothed_img',['ilm_seg_flat']),
-#         PanelSpec('downsampled_img'),
-#         PanelSpec('enh_f'),
-#         PanelSpec('enh'),
-#         PanelSpec('peak_suppressed'),
-#         # PanelSpec('seeds'),
-#         PanelSpec('prob'),
-#         PanelSpec('edge'),
-#         PanelSpec('guided_cost_raw'),
-#         # PanelSpec('guided_cost'),
-#         PanelSpec('guided_cost_raw_tube_smoothed'),
-#         # PanelSpec('guided_cost_refined'),
-#         PanelSpec('highres_diff_horiz_blur'),
-#         PanelSpec('lower_edge_of_tubed'),
-#         # PanelSpec('original_image', ['rpe_raw', 'rpe_guided_tube_smoothed','rpe_smooth']),
-#         PanelSpec('original_image', ['rpe_raw', 'rpe_smooth','lower_edge_line']),
-#     ]
-#     ilm_panels = [
-#         PanelSpec('img'),
-#         PanelSpec('enh'),
-#         PanelSpec('edge'),
-#         PanelSpec('ilm_tube_cost_raw'),
-#         PanelSpec('original_image', ['ilm_raw', 'ilm_smooth']),
-#     ]
-
-#     ncols = max(len(rpe_panels), len(ilm_panels))
-
-#     fig, axes = plt.subplots(2, ncols, figsize=(2.6 * ncols, 6.5))
-
-#     # RPE row
-#     for j, spec in enumerate(rpe_panels):
-#         ax = axes[0, j]
-#         draw_panel(ax, dbg_rpe, spec)
-#     if original_line is not None: # put the original RPE line on
-#         print('plotting the original line too')
-#         x = np.arange(len(original_line))
-#         axes[0,len(rpe_panels)-1].plot(x,original_line, label='prior_plot')
-#     #     ax.legend(fontsize=6, loc='upper right')
-#     # ax.axis('off')
-#     # ILM row
-#     for j, spec in enumerate(ilm_panels):
-#         ax = axes[1, j]
-#         draw_panel(ax, dbg_ilm, spec)
-
-#     # Any spare axes (if panel lists differ)
-#     for j in range(len(rpe_panels), ncols):
-#         axes[0, j].axis('off')
-#     for j in range(len(ilm_panels), ncols):
-#         axes[1, j].axis('off')
-
-#     fig.suptitle(title, fontsize=10)
-#     fig.tight_layout(rect=(0, 0, 1, 0.97))
-#     pdf.savefig(fig)
-#     plt.close(fig)
-
     
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
@@ -550,31 +489,6 @@ def dict_product(grid: dict):
     keys = list(grid)
     for vals in product(*(grid[k] for k in keys)):
         yield dict(zip(keys, vals))
-
-# def sweep_to_arrayboard(board, fn, *, base_kwargs: dict, grid: dict,
-#                         title_fn=None, metric_fn=None):
-#     """
-#     Runs fn(**base_kwargs, **params) for each params in grid and adds output to board.
-#     Returns records (params + metric) for easy plotting.
-
-#     - title_fn(params) -> str   (optional)
-#     - metric_fn(out, params) -> float|dict  (optional)
-#     """
-#     records = []
-#     for params in dict_product(grid):
-#         kwargs = {**base_kwargs, **params}
-#         out = fn(**kwargs)
-
-#         title = title_fn(params) if title_fn else ", ".join(f"{k}={params[k]}" for k in grid)
-#         title = textwrap.fill(title,40)
-#         board.add(out, title=title)
-
-#         if metric_fn is not None:
-#             m = metric_fn(out, params)
-#             records.append({**params, **(m if isinstance(m, dict) else {"metric": m})})
-#         else:
-#             records.append({**params})
-#     return records
 
     
 
