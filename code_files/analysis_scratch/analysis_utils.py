@@ -377,6 +377,254 @@ def quickfig(array):
     plt.imshow(array,cmap='gray')
     plt.show()
 
+def plot_texture_pipeline_summary(
+    vol_flat,
+    layers_flat,
+    slab_avg_map,
+    texture_map,
+    vol_native=None,
+    layers_native=None,
+    y_range=(5, 25),
+    texture_name="texture",
+    n_bscans=3,
+    percentile_clip=(1, 99),
+    texture_alpha=0.45,
+    out_path=None,
+    title=None,
+):
+    """
+    Supplementary pipeline figure:
+      - sample native B-scans with upper/lower overlays
+      - corresponding flattened B-scans
+      - slab overlay on flattened B-scans
+      - en-face slab average
+      - texture map
+      - slab average with texture overlay
+
+    Parameters
+    ----------
+    vol_flat : array-like, shape (Z, Y, X)
+        Flattened volume, typically flattened to rpe_smooth.
+    layers_flat : dict-like
+        Flattened layer dict / npz with at least 'ilm_smooth' and 'rpe_smooth'.
+    slab_avg_map : 2D array, shape (Z, X)
+        En-face slab-average map already computed by your pipeline.
+    texture_map : 2D array
+        Texture map corresponding to slab_avg_map. Can be tiled/downsampled;
+        it will be resized to slab_avg_map shape for display.
+    vol_native : array-like, optional
+        Native (unflattened) volume for before/after illustration.
+    layers_native : dict-like, optional
+        Native layers matching vol_native.
+    y_range : tuple[int, int]
+        Same convention as your mapGenerators.grabslab/basic_slab_avg_map call.
+    texture_name : str
+        Title for the texture panel.
+    n_bscans : int
+        Number of representative B-scans to show.
+    percentile_clip : tuple[float, float]
+        Robust clip for grayscale display.
+    texture_alpha : float
+        Alpha for texture overlay on slab-average map.
+    out_path : str | Path | None
+        If provided, save figure there. Otherwise just show.
+    title : str | None
+        Optional suptitle.
+    """
+    from skimage.transform import resize
+
+    def _as_np(x):
+        return x.compute() if hasattr(x, "compute") else np.asarray(x)
+
+    def _get_layer(d, key):
+        v = d[key]
+        return _as_np(v)
+
+    def _clip_for_display(img, pcts=percentile_clip):
+        img = _as_np(img).astype(np.float32, copy=False)
+        lo, hi = np.nanpercentile(img, pcts)
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            return img
+        return np.clip(img, lo, hi)
+
+    def _choose_z_indices(zdim, n):
+        if n <= 1:
+            return [zdim // 2]
+        vals = np.linspace(max(0, int(0.15 * zdim)),
+                           min(zdim - 1, int(0.85 * zdim)),
+                           n)
+        return [int(round(v)) for v in vals]
+
+    def _slab_bounds_from_line(line, y_range, ydim):
+        # keep same convention as mapGenerators.grabslab
+        y0 = np.rint(line - y_range[0]).astype(int)
+        y1 = np.rint(line - y_range[1]).astype(int)
+        lo = np.minimum(y0, y1)
+        hi = np.maximum(y0, y1)
+        lo = np.clip(lo, 0, ydim - 1)
+        hi = np.clip(hi, 0, ydim - 1)
+        return lo, hi
+
+    def _draw_bscan(ax, img, upper=None, lower=None, slab_lo=None, slab_hi=None, panel_title=""):
+        ax.imshow(_clip_for_display(img), cmap="gray", aspect="auto")
+        x = np.arange(img.shape[1])
+
+        if slab_lo is not None and slab_hi is not None:
+            ax.fill_between(
+                x,
+                slab_lo,
+                slab_hi,
+                color="lime",
+                alpha=0.18,
+                linewidth=0,
+            )
+
+        if upper is not None:
+            ax.plot(x, upper, "c-", lw=0.8, label="upper")
+        if lower is not None:
+            ax.plot(x, lower, "m-", lw=0.8, label="lower")
+
+        ax.set_title(panel_title, fontsize=9)
+        ax.axis("off")
+
+    vol_flat_np = _as_np(vol_flat)
+    slab_avg_np = _as_np(slab_avg_map).astype(np.float32, copy=False)
+
+    if texture_map.shape != slab_avg_np.shape:
+        texture_disp = resize(
+            _as_np(texture_map).astype(np.float32, copy=False),
+            slab_avg_np.shape,
+            order=1,
+            preserve_range=True,
+            anti_aliasing=False,
+        ).astype(np.float32, copy=False)
+    else:
+        texture_disp = _as_np(texture_map).astype(np.float32, copy=False)
+
+    ilm_flat = _get_layer(layers_flat, "ilm_smooth")
+    rpe_flat = _get_layer(layers_flat, "rpe_smooth")
+
+    if vol_native is not None and layers_native is not None:
+        vol_native_np = _as_np(vol_native)
+        ilm_native = _get_layer(layers_native, "ilm_smooth")
+        rpe_native = _get_layer(layers_native, "rpe_smooth")
+        show_native = True
+    else:
+        vol_native_np = vol_flat_np
+        ilm_native = ilm_flat
+        rpe_native = rpe_flat
+        show_native = False
+
+    z_idx = _choose_z_indices(vol_flat_np.shape[0], n_bscans)
+
+    ncols = n_bscans
+    nrows = 3 if show_native else 2
+    fig, axes = plt.subplots(
+        nrows=nrows,
+        ncols=ncols + 3,
+        figsize=(3.6 * (ncols + 3), 3.2 * nrows),
+        dpi=250,
+        squeeze=False,
+    )
+
+    # --- sample B-scans ---
+    for j, z in enumerate(z_idx):
+        native_img = vol_native_np[z]
+        flat_img = vol_flat_np[z]
+
+        native_lo, native_hi = _slab_bounds_from_line(rpe_native[z], y_range, native_img.shape[0])
+        flat_lo, flat_hi = _slab_bounds_from_line(rpe_flat[z], y_range, flat_img.shape[0])
+
+        _draw_bscan(
+            axes[0, j],
+            native_img,
+            upper=ilm_native[z],
+            lower=rpe_native[z],
+            slab_lo=native_lo,
+            slab_hi=native_hi,
+            panel_title=f"native z={z}" if show_native else f"flat z={z}",
+        )
+
+        row_flat = 1 if show_native else 0
+        _draw_bscan(
+            axes[row_flat, j],
+            flat_img,
+            upper=ilm_flat[z],
+            lower=rpe_flat[z],
+            slab_lo=flat_lo,
+            slab_hi=flat_hi,
+            panel_title=f"flattened z={z}" if show_native else f"flat+slab z={z}",
+        )
+
+        if show_native:
+            ax = axes[1, j]
+            ax.imshow(_clip_for_display(flat_img), cmap="gray", aspect="auto")
+            x = np.arange(flat_img.shape[1])
+            ax.fill_between(x, flat_lo, flat_hi, color="lime", alpha=0.18, linewidth=0)
+            ax.plot(x, ilm_flat[z], "c-", lw=0.8)
+            ax.plot(x, rpe_flat[z], "m-", lw=0.8)
+            ax.set_title(f"flat + slab z={z}", fontsize=9)
+            ax.axis("off")
+
+    # blank any unused cells if n_bscans < fixed cols
+    for r in range(nrows):
+        for c in range(n_bscans, ncols):
+            axes[r, c].axis("off")
+
+    # --- en-face panels ---
+    start_col = ncols
+
+    ax = axes[0, start_col]
+    ax.imshow(_clip_for_display(slab_avg_np), cmap="gray", aspect="auto")
+    ax.set_title("en-face slab average", fontsize=9)
+    ax.axis("off")
+
+    ax = axes[0, start_col + 1]
+    tex_show = np.ma.masked_invalid(texture_disp)
+    ax.imshow(tex_show, cmap="turbo", aspect="auto")
+    ax.set_title(texture_name, fontsize=9)
+    ax.axis("off")
+
+    ax = axes[0, start_col + 2]
+    ax.imshow(_clip_for_display(slab_avg_np), cmap="gray", aspect="auto")
+    ax.imshow(tex_show, cmap="turbo", aspect="auto", alpha=texture_alpha)
+    ax.set_title("slab avg + texture overlay", fontsize=9)
+    ax.axis("off")
+
+    # bottom-right row(s): optional intensity summaries / leave clean
+    row_bottom = nrows - 1
+    ax = axes[row_bottom, start_col]
+    ax.plot(np.nanmean(slab_avg_np, axis=1), lw=1.0)
+    ax.set_title("mean slab intensity by z", fontsize=9)
+
+    ax = axes[row_bottom, start_col + 1]
+    ax.plot(np.nanmean(texture_disp, axis=1), lw=1.0)
+    ax.set_title(f"mean {texture_name} by z", fontsize=9)
+
+    ax = axes[row_bottom, start_col + 2]
+    ax.scatter(
+        np.nanmean(slab_avg_np, axis=1),
+        np.nanmean(texture_disp, axis=1),
+        s=8,
+        alpha=0.8,
+    )
+    ax.set_title("slice-wise mean relation", fontsize=9)
+    ax.set_xlabel("slab avg")
+    ax.set_ylabel(texture_name)
+
+    if title is None:
+        title = "texture pipeline summary"
+    fig.suptitle(title, fontsize=12)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+
+    if out_path is not None:
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(out_path, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()
+
 
 
 
