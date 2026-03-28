@@ -1,5 +1,5 @@
-#REVIEWED
 from __future__ import annotations
+#REVIEWED
 
 import argparse
 import json
@@ -13,13 +13,20 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 # from texture_package_prod.fundus_preprocessing_utils import preprocess_fundus_for_texture
 from texture_package_prod.simulation_utils import simulate_oct_volume
-from texture_package_prod.texture_extraction_utilities import compute_dense_texture_maps, project_bscan_texture_to_enface, resample_map_to_image
 from texture_package_prod.texture_io import load_image,  load_layers_npz, load_ss_volume # load_landmark_dict,
 from texture_package_prod.texture_plotting_utils import plot_regions_overlay, plot_feature_mosaic
 from texture_package_prod.texture_regions import make_etdrs_grid_plus_rings, summarize_by_regions
+from texture_package_prod.texture_extraction_utilities import (
+    compute_dense_texture_maps,
+    project_bscan_texture_to_enface,
+    resample_map_to_image,
+    compute_bscan_texture_volumes_to_zarr,
+)
 # from texture_package_prod.vessel_texture_postproc_utils import estimate_vessel_mask_from_enface, postprocess_feature_dict
 
 from code_files import file_utils
+from code_files import zarr_file_utils as zfu
+import time
 
 DEFAULT_FAMILIES = ('firstorder', 'glcm', 'glrlm', 'glszm', 'gldm', 'ngtdm', 'lbp', 'gradient')
 
@@ -66,6 +73,7 @@ def run_oct(args):
             upper = upper[::args.z_step]
             lower = lower[::args.z_step]
 
+
     maps = project_bscan_texture_to_enface(
         volume,
         upper_bound=upper,
@@ -86,6 +94,62 @@ def run_oct(args):
     plot_feature_mosaic(preview, maps, meta=None, out_path=out_dir / 'enface_mosaic.png')
 
 
+def run_oct_to_zarr(args):
+    import zarr
+    # volume = load_ss_volume(args.input, mmap=True, z_step=args.z_step)
+    # upper, lower = _load_bounds(args)
+
+    t1 = time.time()
+    print(f'flattening here')
+    art = zfu.ensure_flattened_artifacts(
+        vol_path=Path(args.input),
+        flatten_with=file_utils.get_algorithm_key_from_filepath(args.input),
+        layers_root=args.layers_root,
+        z_stride=args.z_step,
+        overwrite=args.overwrite,
+        make_image_zarr=True,
+        make_label_zarr=True,
+        save_flat_layers_npz=True,
+    )
+    print(f"we have completed the flattening: {time.time()-t1} time")
+
+    layers = np.load(art['flat_layers_npz'])
+    algo_key = file_utils.get_algorithm_key_from_filepath(args.input)
+    lower = layers[algo_key] + args.rpe_offset
+    # upper = layers['ilm_smooth']
+    upper = lower+args.slab_thickness
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = out_dir/Path(args.input).stem
+
+    zarr_path = out_dir / 'texture_bscan_maps.zarr'
+
+    root = zarr.open_group(str(art["image_zarr"]), mode="r")
+    volume = root["data"]
+    t1 = time.time()
+    print("now computing the textures")
+    compute_bscan_texture_volumes_to_zarr(
+        volume=volume,
+        upper_bound=upper,
+        lower_bound=lower,
+        out_zarr_path=zarr_path,
+        z_step=1,
+        window=args.window,
+        step=args.step,
+        pad=args.pad,
+        families=DEFAULT_FAMILIES,
+        include_wavelet=not args.no_wavelet,
+        # features_to_keep=('raw__mean', 'raw__std', 'raw__glcm_contrast'),
+        features_to_keep=None,
+        n_jobs=args.n_jobs,
+        single_bscan_n_jobs=args.single_bscan_n_jobs,
+    )
+    print(f"we have completed the textures: {time.time()-t1} time")
+
+    with open(out_dir / 'zarr_path.txt', 'w') as f:
+        f.write(str(zarr_path) + '\n')
+
 def make_argparser():
     p = argparse.ArgumentParser(description='Readable texture-analysis entry point.')
     p.add_argument('--mode', choices=['fundus', 'oct'], required=True)
@@ -94,12 +158,19 @@ def make_argparser():
     p.add_argument('--window', type=int, default=31)
     p.add_argument('--step', type=int, default=6)
     p.add_argument('--n-jobs', type=int, default=1)
+    p.add_argument('--single_bscan_n_jobs', type=int, default=1)
     p.add_argument('--no-wavelet', action='store_true')
     p.add_argument('--seed', type=int, default=0)
 
     p.add_argument('--landmarks', type=str, default=None)
     p.add_argument('--postprocess-vessels', action='store_true')
     p.add_argument('--post-radius', type=int, default=5)
+
+    p.add_argument('--overwrite', action='store_true')
+    
+
+    p.add_argument('--rpe_offset', type=int, default=5)
+    p.add_argument('--slab_thickness', type=int, default=10)
 
     p.add_argument('--layers-root', type=str, default=None)
     p.add_argument('--upper-key', type=str, default='ilm_smooth')
@@ -123,7 +194,8 @@ def main():
     if args.mode == 'fundus':
         run_fundus(args)
     else:
-        run_oct(args)
+        # run_oct(args)
+        run_oct_to_zarr(args)
 
 
 if __name__ == '__main__':

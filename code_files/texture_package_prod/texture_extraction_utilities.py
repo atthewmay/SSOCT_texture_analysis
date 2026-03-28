@@ -12,6 +12,13 @@ from scipy.stats import entropy as scipy_entropy
 from skimage.feature import graycomatrix, graycoprops, local_binary_pattern
 from skimage.transform import resize
 from skimage.measure import label as cc_label
+import code_files.segmentation_code.segmentation_plot_utils as spu
+
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+
+import numcodecs
+import zarr
 
 # from .vessel_texture_postproc_utils import estimate_shadow_mask_from_bscan, postprocess_feature_dict
 
@@ -394,6 +401,233 @@ def resample_map_to_image(feature_map: np.ndarray, meta: DenseMapMeta, order: in
     """Resize a sampled-grid map back to image size for quick visualization."""
     return resize(feature_map, meta.image_shape, order=order, preserve_range=True, anti_aliasing=False).astype(np.float32)
 
+def _compute_one_bscan_texture_fullres(
+    z: int,
+    bscan: np.ndarray,
+    upper: np.ndarray,
+    lower: np.ndarray,
+    window: int,
+    step: int,
+    pad: int,
+    families: tuple[str, ...],
+    include_wavelet: bool,
+    levels: int,
+    features_to_keep: tuple[str, ...] | None = None,
+    n_jobs: int = 1,
+) -> tuple[int, dict[str, np.ndarray]]:
+    """
+    Compute selected dense texture maps for one B-scan, then resample/scatter them
+    back into full (Y, X) image coordinates with NaN outside the processed crop.
+
+    I think really to get the best texture features we should pre-flatten (like for the horizontal and diagnoal runs, the horizontal structures will come out much better)
+    """
+    y_min = int(np.floor(np.minimum(upper, lower).min() - pad - window))
+    y_max = int(np.ceil(np.maximum(upper, lower).max() + pad + window))
+    y_min = max(0, y_min)
+    y_max = min(bscan.shape[0], y_max)
+
+    crop = bscan[y_min:y_max]
+
+    maps, meta = compute_dense_texture_maps(
+        crop,
+        window=window,
+        step=step,
+        mask=None,
+        families=families,
+        include_wavelet=include_wavelet,
+        levels=levels,
+        n_jobs=n_jobs,
+    )
+
+    if features_to_keep is not None:
+        keep = set(features_to_keep)
+        maps = {k: v for k, v in maps.items() if k in keep}
+
+    full_maps = {}
+    for name, fmap in maps.items():
+        full_crop = resample_map_to_image(fmap, meta)
+        full_img = np.full(bscan.shape, np.nan, dtype=np.float32)
+        full_img[y_min:y_max, :] = full_crop.astype(np.float32, copy=False)
+        full_maps[name] = full_img
+
+    return z, full_maps
+
+
+def _open_texture_zarr_group(
+    out_zarr_path: str | Path,
+    volume_shape: tuple[int, int, int],
+    feature_names: list[str],
+    chunks: tuple[int, int, int] | None = None,
+    overwrite: bool = True,
+):
+    """
+    Create one zarr group with one dataset per feature, each shaped (Z, Y, X).
+    """
+    out_zarr_path = Path(out_zarr_path)
+    compressor = numcodecs.Blosc(
+        cname='lz4',
+        clevel=3,
+        shuffle=numcodecs.Blosc.BITSHUFFLE,
+    )
+
+    if chunks is None:
+        zdim, ydim, xdim = volume_shape
+        chunks = (1, min(256, ydim), min(256, xdim))
+
+    # root = zarr.open_group(str(out_zarr_path), mode='w' if overwrite else 'a')
+    root = zarr.open_group(
+        str(out_zarr_path),
+        mode='w' if overwrite else 'a',
+        zarr_format=2,
+    )
+    datasets = {}
+    for name in feature_names:
+        datasets[name] = root.create_array(
+                name=name,
+                shape=volume_shape,
+                chunks=chunks,
+                dtype=np.float32,
+                compressor=compressor,
+                overwrite=overwrite,
+                fill_value=np.nan,
+        )
+    root.attrs['volume_shape'] = tuple(int(v) for v in volume_shape)
+    root.attrs['chunks'] = tuple(int(v) for v in chunks)
+    return root, datasets
+
+
+def compute_bscan_texture_volumes_to_zarr(
+    volume: np.ndarray,
+    upper_bound: np.ndarray,
+    lower_bound: np.ndarray,
+    out_zarr_path: str | Path,
+    z_step: int = 1,
+    window: int = 31,
+    step: int = 4,
+    pad: int = 10,
+    families: tuple[str, ...] = ('firstorder', 'glcm', 'glrlm', 'glszm', 'gldm', 'ngtdm', 'lbp', 'gradient'),
+    include_wavelet: bool = False,
+    levels: int = 32,
+    features_to_keep: tuple[str, ...] | None = None,
+    chunks: tuple[int, int, int] | None = None,
+    n_jobs: int = 1,
+    single_bscan_n_jobs: int=1,
+    overwrite: bool = True,
+) -> Path:
+    """
+    Compute dense B-scan texture maps and stream them into a zarr group.
+
+    Output layout:
+        out_zarr_path/
+            raw__mean
+            raw__std
+            raw__glcm_contrast
+            ...
+
+    Each dataset has shape (Z, Y, X), with NaN for unsampled z slices when z_step > 1.
+    """
+    vol = np.asarray(volume)
+    if vol.ndim != 3:
+        raise ValueError('volume must be (Z, Y, X)')
+    if upper_bound.shape != (vol.shape[0], vol.shape[2]):
+        raise ValueError('upper_bound must have shape (Z, X)')
+    if lower_bound.shape != (vol.shape[0], vol.shape[2]):
+        raise ValueError('lower_bound must have shape (Z, X)')
+
+    z_idx = np.arange(0, vol.shape[0], z_step, dtype=int)
+    if len(z_idx) == 0:
+        raise ValueError('No z indices selected')
+
+    # REFACTOR can make faster, notable for small slice count
+    # Probe first slice to determine feature names before opening zarr datasets.
+    z0 = int(z_idx[0])
+    _, first_maps = _compute_one_bscan_texture_fullres(
+        z=z0,
+        bscan=vol[z0].astype(np.float32),
+        upper=upper_bound[z0].astype(np.float32),
+        lower=lower_bound[z0].astype(np.float32),
+        window=window,
+        step=step,
+        pad=pad,
+        families=families,
+        include_wavelet=include_wavelet,
+        levels=levels,
+        features_to_keep=features_to_keep,
+        n_jobs=single_bscan_n_jobs
+    )
+    feature_names = sorted(first_maps)
+    if not feature_names:
+        raise ValueError('No feature maps were produced')
+
+    root, zarr_datasets = _open_texture_zarr_group(
+        out_zarr_path=out_zarr_path,
+        volume_shape=vol.shape,
+        feature_names=feature_names,
+        chunks=chunks,
+        overwrite=overwrite,
+    )
+
+    root.attrs['z_step'] = int(z_step)
+    root.attrs['window'] = int(window)
+    root.attrs['step'] = int(step)
+    root.attrs['pad'] = int(pad)
+    root.attrs['levels'] = int(levels)
+    root.attrs['families'] = list(families)
+    root.attrs['include_wavelet'] = bool(include_wavelet)
+    root.attrs['features_to_keep'] = None if features_to_keep is None else list(features_to_keep)
+
+    # Write the probe slice immediately.
+    for name, arr in first_maps.items():
+        zarr_datasets[name][z0, :, :] = arr
+
+    remaining_z = [int(z) for z in z_idx[1:]]
+
+    if n_jobs == 1:
+        for z in remaining_z:
+            _, maps = _compute_one_bscan_texture_fullres(
+                z=z,
+                bscan=vol[z].astype(np.float32),
+                upper=upper_bound[z].astype(np.float32),
+                lower=lower_bound[z].astype(np.float32),
+                window=window,
+                step=step,
+                pad=pad,
+                families=families,
+                include_wavelet=include_wavelet,
+                levels=levels,
+                features_to_keep=features_to_keep,
+            )
+            for name, arr in maps.items():
+                zarr_datasets[name][z, :, :] = arr
+    else:
+        with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+            futures = [
+                ex.submit(
+                    _compute_one_bscan_texture_fullres,
+                    int(z),
+                    vol[z].astype(np.float32),
+                    upper_bound[z].astype(np.float32),
+                    lower_bound[z].astype(np.float32),
+                    window,
+                    step,
+                    pad,
+                    families,
+                    include_wavelet,
+                    levels,
+                    features_to_keep,
+                    n_jobs = single_bscan_n_jobs,
+                )
+                for z in remaining_z
+            ]
+
+            for fut in as_completed(futures):
+                z, maps = fut.result()
+                for name, arr in maps.items():
+                    zarr_datasets[name][z, :, :] = arr
+
+    zarr.consolidate_metadata(str(out_zarr_path))
+    return Path(out_zarr_path)
+
 
 # ---------- B-scan -> en-face ----------
 
@@ -409,6 +643,7 @@ def _project_one_bscan(
     include_wavelet: bool,
     levels: int,
     feature_post_radius: int,
+    debug_plot: bool=False,
 ) -> tuple[int, dict[str, np.ndarray]]:
     y_min = int(np.floor(np.minimum(upper, lower).min() - pad - window))
     y_max = int(np.ceil(np.maximum(upper, lower).max() + pad + window))
@@ -426,6 +661,11 @@ def _project_one_bscan(
         levels=levels,
         n_jobs=1,
     )
+
+    # AB = spu.ArrayBoard(skip = -debug_plot,plt_display=False,save_tag=f"bscan_demo")
+    # for map in maps:
+        # do the array board stuff here
+
 
     # Nonsense!
     # shadow_mask = estimate_shadow_mask_from_bscan(crop)

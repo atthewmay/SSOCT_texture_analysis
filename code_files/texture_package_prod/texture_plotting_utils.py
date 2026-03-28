@@ -99,3 +99,37 @@ def plot_alignment_preview(left: np.ndarray, right: np.ndarray, out_path: str | 
         fig.savefig(out_path, bbox_inches='tight')
         plt.close(fig)
     return fig
+
+
+
+
+def plot_texture_zarr_feature_grid(
+    zarr_path,
+    features=('raw__mean', 'raw__std', 'raw__glcm_contrast'),
+    n_slices=5,
+    save_path=None,
+):
+    import zarr
+    root = zarr.open_group(str(zarr_path), mode='r')
+
+    features = [f for f in features if f in root]
+
+    if not features:
+        raise ValueError('None of the requested features were found in the zarr.')
+    print(list(root.keys()))
+    print(f"all the features to be plotted are {features}")
+
+    Z = root[features[0]].shape[0]
+    z_indices = np.linspace(0, Z - 1, n_slices).round().astype(int)
+    z_indices = np.unique(z_indices)
+
+    AB = ArrayBoard(plt_display=False, return_fig=True, ncols_max=len(features), save_tag='texture_zarr_grid')
+
+    for z in z_indices:
+        for feat in features:
+            AB.add(root[feat][int(z), :, :], title=f'{feat} | z={int(z)}')
+
+    fig = AB.render(suptitle=f'{Path(zarr_path).name}')
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches='tight')
+    return fig
