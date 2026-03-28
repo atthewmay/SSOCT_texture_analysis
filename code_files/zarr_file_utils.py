@@ -274,7 +274,9 @@ def ensure_flattened_artifacts(
     )
 
     if not need_build:
-        print(f"[reuse] flattened artifacts for {vol_path.name} using {flatten_with}")
+        print(f"[reuse] flattened artifacts for {vol_path.name} using {flatten_with}. asserting z_stride aligns.")
+
+        assert np.load(flat_meta_npz)['z_stride'] == z_stride
         return {
             "image_zarr": img_zarr if make_image_zarr else None,
             "label_zarr": lbl_zarr if make_label_zarr else None,
@@ -338,6 +340,7 @@ def ensure_flattened_artifacts(
         shift_y_full=flat_meta["shift_y_full"].astype(np.float32),
         target_y=flat_meta["target_y"].astype(np.float32),
         fill=np.array(flat_meta["fill"], dtype=np.float32),
+        z_stride=z_stride,
     )
     print(f"[build] flat meta -> {flat_meta_npz}")
 

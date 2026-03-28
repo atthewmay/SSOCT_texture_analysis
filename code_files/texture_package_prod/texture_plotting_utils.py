@@ -161,7 +161,6 @@ def plot_texture_zarr_feature_grid(
 
             AB = ArrayBoard(
                 plt_display=False,
-                return_fig=True,
                 ncols_max=min(len(feat_chunk), 6),
                 save_tag=f"{save_tag}_z{int(z):03d}_part{start // max_per_array_board:02d}",
             )
