@@ -5,6 +5,7 @@ from pathlib import Path
 from token import OP
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # adds Han_AIR/ to path
+import code_files.segmentation_code.flattening_utility_functions
 import code_files.segmentation_code.segmentation_utility_functions as suf
 import code_files.segmentation_code.segmentation_plot_utils as spu
 import code_files.file_utils as fu
@@ -506,10 +507,10 @@ def step_rpe_hypersmoother(ctx: RPEContext) -> RPEContext:
 
     raise Exception("Intending to end here")
     """
-    ctx.hypersmoothed_img,ctx.hypersmoother_params.hypersmoother_shift_y_full,ctx.hypersmoother_params.hypersmoother_target_y = suf.flatten_to_path(ctx.img,ctx.hypersmoother_params.hypersmoother_path)
+    ctx.hypersmoothed_img,ctx.hypersmoother_params.hypersmoother_shift_y_full,ctx.hypersmoother_params.hypersmoother_target_y = code_files.segmentation_code.flattening_utility_functions.flatten_to_path(ctx.img,ctx.hypersmoother_params.hypersmoother_path)
     # ctx.hypersmoothed_img,ctx.hypersmoother_params = suf.rpe_hypersmoother_basic_DP(ctx.img)
     # ilm_original = ctx.ilm_seg.copy()
-    ctx.ilm_seg_flat = suf.warp_line_by_shift(ctx.ilm_seg,ctx.hypersmoother_params.hypersmoother_shift_y_full,direction="to_flat")
+    ctx.ilm_seg_flat = code_files.segmentation_code.flattening_utility_functions.warp_line_by_shift(ctx.ilm_seg,ctx.hypersmoother_params.hypersmoother_shift_y_full,direction="to_flat")
     ctx.ilm_seg = ctx.ilm_seg_flat
 
     ctx.img = ctx.hypersmoothed_img
@@ -761,8 +762,8 @@ def step_rpe_hypersmoother_3_7_26(ctx: RPEContext,DEBUG_THIS_FUNCTION=False) -> 
             horizontal_factor=ds,
         )
 
-    ctx.hypersmoothed_img,ctx.hypersmoother_params.hypersmoother_shift_y_full,ctx.hypersmoother_params.hypersmoother_target_y = suf.flatten_to_path(ctx.img,ctx.hypersmoother_params.hypersmoother_path)
-    ctx.ilm_seg_flat = suf.warp_line_by_shift(ctx.ilm_seg,ctx.hypersmoother_params.hypersmoother_shift_y_full,direction="to_flat")
+    ctx.hypersmoothed_img,ctx.hypersmoother_params.hypersmoother_shift_y_full,ctx.hypersmoother_params.hypersmoother_target_y = code_files.segmentation_code.flattening_utility_functions.flatten_to_path(ctx.img,ctx.hypersmoother_params.hypersmoother_path)
+    ctx.ilm_seg_flat = code_files.segmentation_code.flattening_utility_functions.warp_line_by_shift(ctx.ilm_seg,ctx.hypersmoother_params.hypersmoother_shift_y_full,direction="to_flat")
     ctx.ilm_seg = ctx.ilm_seg_flat
     # In this debugging pipeline, will just keep the first entry of the loop
     ctx.img = ctx.hypersmoothed_img
@@ -909,8 +910,8 @@ def step_rpe_highres_smooth(ctx: RPEContext) -> RPEContext:
     """reflatten any needed images by another line. Output the line, and save the params for later unsmoothing
     Specifically this won't modify the old images bc the highres pathway is totally separate from the original pathway."""
 
-    ctx.highres_smoothed_img,ctx.hypersmoother_params.highres_smoother_shift_y_full,ctx.hypersmoother_params.highres_smoother_target_y = suf.flatten_to_path(ctx.original_image,ctx.rpe_smooth)
-    ctx.flat_rpe_smooth = suf.warp_line_by_shift(ctx.rpe_smooth,ctx.hypersmoother_params.highres_smoother_shift_y_full,direction="to_flat")
+    ctx.highres_smoothed_img,ctx.hypersmoother_params.highres_smoother_shift_y_full,ctx.hypersmoother_params.highres_smoother_target_y = code_files.segmentation_code.flattening_utility_functions.flatten_to_path(ctx.original_image,ctx.rpe_smooth)
+    ctx.flat_rpe_smooth = code_files.segmentation_code.flattening_utility_functions.warp_line_by_shift(ctx.rpe_smooth,ctx.hypersmoother_params.highres_smoother_shift_y_full,direction="to_flat")
     ctx.img = ctx.highres_smoothed_img
 
     # AB = spu.ArrayBoard(plt_display=False,save_tag="testing_new_flattener")
@@ -965,7 +966,7 @@ def step_rpe_unsmooth(ctx: RPEContext) -> RPEContext:
         setattr(
             ctx,
             name,
-            suf.warp_line_by_shift(line, shift, direction="to_orig"),
+            code_files.segmentation_code.flattening_utility_functions.warp_line_by_shift(line, shift, direction="to_orig"),
         )
 
     return ctx
@@ -991,7 +992,7 @@ def step_rpe_highres_unsmooth(ctx: RPEContext) -> RPEContext:
             setattr(
                 ctx.highres_ctx,
                 attr,
-                suf.warp_line_by_shift(line, shift, direction="to_orig")
+                code_files.segmentation_code.flattening_utility_functions.warp_line_by_shift(line, shift, direction="to_orig")
             )
 
     two_dp_linenames = ['y1_rescaled', 'y2_rescaled']
@@ -1005,7 +1006,7 @@ def step_rpe_highres_unsmooth(ctx: RPEContext) -> RPEContext:
             line = getattr(dp_instance, n, None)
             if line is not None:
                 ctx.log_history(f'flat_{n}', line.copy())
-                setattr(dp_instance, n, suf.warp_line_by_shift(line, shift, direction="to_orig"))
+                setattr(dp_instance, n, code_files.segmentation_code.flattening_utility_functions.warp_line_by_shift(line, shift, direction="to_orig"))
             # else:
                 # print(f"dp_instance of type: {type(dp_instance)} has None for {n}, yet has dict keys of {dp_instance.__dict__.keys()}")
 
@@ -1715,7 +1716,7 @@ class helperFunctions(object):
             name,line = item
             ctx.log_history(f'flat_{name}', line.copy())
         
-        unwarped_lines = [suf.warp_line_by_shift(line[1],unflattening_shift,direction='to_orig') for line in lines] #shoudl refactor
+        unwarped_lines = [code_files.segmentation_code.flattening_utility_functions.warp_line_by_shift(line[1],unflattening_shift,direction='to_orig') for line in lines] #shoudl refactor
         
         if getattr(ctx.highres_ctx,'rpe_refined2') is not None:
             (ctx.rpe_raw,
@@ -3436,7 +3437,7 @@ def step_rpe_highres_grad_testing(ctx: RPEContext) -> RPEContext:
 def step_ilm_hypersmoother(ctx: ILMContext) -> ILMContext:
     """run the big coarse smoother as inital preprocess. if using this you have to unsmooth at the end, which is why we store the hypersmooth line. We also adjust the ilm line"""
     ctx.hypersmoother_params.coarse_hypersmoothed_img,ctx.hypersmoother_params.hypersmoother_path,ctx.hypersmoother_params.hypersmoother_y_dp = suf.rpe_hypersmoother_DP(ctx.original_image,ds_x=8,ds_y=8)
-    ctx.hypersmoothed_img,ctx.hypersmoother_params.hypersmoother_shift_y_full,ctx.hypersmoother_params.hypersmoother_target_y = suf.flatten_to_path(ctx.original_image,ctx.hypersmoother_params.hypersmoother_path)
+    ctx.hypersmoothed_img,ctx.hypersmoother_params.hypersmoother_shift_y_full,ctx.hypersmoother_params.hypersmoother_target_y = code_files.segmentation_code.flattening_utility_functions.flatten_to_path(ctx.original_image,ctx.hypersmoother_params.hypersmoother_path)
     return ctx
 
 
@@ -3728,7 +3729,7 @@ def step_ilm_unsmooth(ctx: ILMContext) -> ILMContext:
         setattr(
             ctx,
             name,
-            suf.warp_line_by_shift(line, shift, direction="to_orig"),
+            code_files.segmentation_code.flattening_utility_functions.warp_line_by_shift(line, shift, direction="to_orig"),
         )
     return ctx
 

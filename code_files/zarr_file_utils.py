@@ -1,6 +1,8 @@
 from __future__ import annotations
 from pathlib import Path
 import sys
+
+from code_files.segmentation_code.flattening_utility_functions import warp_line_by_shift
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # adds Han_AIR/ to path
 import numpy as np
 import code_files.visualization_utils as vu
@@ -87,6 +89,131 @@ def write_volume_to_zarr_streaming(vol_np: np.ndarray, zarr_path: Path, chunks: 
     return zarr_path
 
 
+def ensure_image_zarr(vol_path: Path, z_stride: int,overwrite: bool) -> Path:
+    """Create/reuse an image Zarr next to vol_path, thinning Z if requested."""
+    zarr_path = vol_path.with_suffix(".zarr")
+    if not zarr_path.exists() or overwrite == True:
+        vol_np = fu.load_ss_volume2(vol_path, z_step=1, y_step=1, x_step=1, mmap=True) # slightly less than optimal to load entire z-dim, but only occurs 1x
+        H, W = vol_np.shape[1], vol_np.shape[2]
+        chunks = (1, H, W)  # full B-scan per chunk
+        write_volume_to_zarr_streaming(vol_np[::max(1, z_stride)], zarr_path, chunks)
+        print(f"[build] image → {zarr_path}")
+    else:
+        print(f"[reuse] image → {zarr_path}")
+    return zarr_path
+
+
+def write_labels_group_to_zarr_streaming(
+    vols: dict[str, np.ndarray],
+    zarr_path: Path,
+    chunks: tuple[int, int, int],
+):
+    """
+    vols: {name: (Z,H,W) uint8/uint16 label volumes}
+    writes to a zarr group at `zarr_path`, one dataset per key.
+    """
+    import zarr, numcodecs, numpy as np
+
+    compressor = numcodecs.Blosc(cname="lz4", clevel=3, shuffle=numcodecs.Blosc.BITSHUFFLE)
+
+    store = zarr.DirectoryStore(str(zarr_path))
+    root = zarr.open_group(store, mode="w")  # overwrite group
+
+    # Create datasets
+    for name, v in vols.items():
+        assert v.ndim == 3, (name, v.shape)
+        Z, H, W = v.shape
+        root.create_dataset( # Weird idk why
+            name,
+            shape=(Z, H, W),
+            chunks=chunks,
+            dtype=v.dtype,
+            compressor=compressor,
+            overwrite=True,
+        )
+
+    # Stream slice-by-slice in Z (bounded RAM)
+    # (Writes one Z-chunk per dataset per k)
+    any_vol = next(iter(vols.values()))
+    Z = any_vol.shape[0]
+    for k in range(Z):
+        for name, v in vols.items():
+            root[name][k, :, :] = v[k, :, :]
+
+    zarr.consolidate_metadata(store)
+    return zarr_path
+
+def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,layers_root: str ) -> Path:
+    """Create/reuse a labels Zarr from the *_layers.npz file aligned to vol_path.
+    if supplied a labels_dir
+    1/26/26: now accepting a zarr folder with subfoldersing during the refactorj
+    """
+    # layer_path = fu.get_corresponding_layer_path(vol_path, file_suffix='_layers.npz', dir_suffix=dir_suffix)
+    # layer_path = fu.get_corresponding_layer_path(vol_path, file_suffix='', dir_suffix=dir_suffix) # For january script, just keep name for simplicity
+    layer_path = fu.new_get_corresponding_layer_path(vol_path,layers_root=layers_root) # For january script, just keep name for simplicity
+    if not layer_path.exists():
+        print(f"Layer file not found for {vol_path}. For now will simply return")
+        return None
+        raise FileNotFoundError(f"Layer file not found for {vol_path}: {layer_path}")
+    labels_zarr = layer_path.with_suffix(".zarr") # now a dir with group
+
+    if not labels_zarr.exists() or overwrite == True:
+        # Load image *shape* via memmap to get H,W without big RAM
+        vol_np = fu.load_ss_volume2(vol_path, z_step=1, y_step=1, x_step=1, mmap=True) #right, doesn't really load it
+        H, W = vol_np.shape[1], vol_np.shape[2]
+
+        layers = np.load(layer_path)                      # (Z, W, n_layers) dict-like npz or array
+        layers = fu.downsample_layers(layers, (1, 1, 1))  # keep XY native for alignment
+
+        LABEL_SETS = {
+            'basics':["hypersmoother_path", "rpe_smooth", "ilm_raw", "ilm_smooth"],
+            'ILM':["ilm_raw", "ilm_smooth"],
+            'two_layer_original': [
+                # 'original_method_y1_rescaled',
+                # 'original_method_y2_rescaled',
+                'original_method_y1_vertical_shifted',
+                'original_method_y2_vertical_shifted',
+            ],
+            'two_layer_choroidal': [ 
+                # 'choroidal_method_y1_rescaled',
+                # 'choroidal_method_y2_rescaled',
+                'choroidal_method_y1_vertical_shifted',
+                'choroidal_method_y2_vertical_shifted',],
+            'two_layer_EZ': [ 
+                    # 'EZ_method_y1_rescaled',
+                    # 'EZ_method_y2_rescaled',
+                    'EZ_method_y1_vertical_shifted',
+                    'EZ_method_y2_vertical_shifted'],
+            'all_methods_RPE':[
+                'original_method_y2_vertical_shifted',
+                'choroidal_method_y1_vertical_shifted',
+                'EZ_method_y2_vertical_shifted'],
+        }
+ 
+ 
+        vols = {}
+        for set_name, names in LABEL_SETS.items():
+            print(f"assigning names = {names} into the label-zarr being created")
+            v = fu.curves_to_label_vol(
+                layers,
+                image_height=H,
+                vert_dilation_size=1,
+                names_to_use=names,
+            )
+            if z_stride > 1:
+                v = v[::z_stride]
+            vols[set_name] = v.astype(np.uint8, copy=False)
+            print(f"np.unique(v,return_counts=True) = {np.unique(v,return_counts=True)}")
+ 
+        write_labels_group_to_zarr_streaming(vols, labels_zarr, chunks=(1, H, W))
+
+        print(f"[build] labels → {labels_zarr}")
+    else:
+        print(f"[reuse] labels → {labels_zarr}")
+    return labels_zarr
+
+
+
 
 
 from pathlib import Path
@@ -94,7 +221,7 @@ import zarr
 import numcodecs
 
 from code_files import file_utils as fu
-from code_files.segmentation_code import segmentation_utility_functions as sfu
+from code_files.segmentation_code.flattening_utility_functions import flatten_to_path
 
 
 def _write_volume_to_zarr_streaming(vol_np: np.ndarray, zarr_path: Path, chunks: tuple[int, int, int], overwrite: bool = True):
@@ -106,16 +233,32 @@ def _write_volume_to_zarr_streaming(vol_np: np.ndarray, zarr_path: Path, chunks:
     )
 
     Z, Y, X = vol_np.shape
-    root = zarr.open_group(str(zarr_path), mode="w" if overwrite else "a", zarr_format=2)
-    arr = root.create_array(
-        name="data",
-        shape=(Z, Y, X),
-        chunks=chunks,
-        dtype=vol_np.dtype,
-        compressor=compressor,
-        overwrite=overwrite,
-        fill_value=0,
-    )
+    # root = zarr.open_group(str(zarr_path), mode="w" if overwrite else "a", zarr_format=2)
+    try: # so ugly. An issue with zarr versions. unfortunately not easily fixable rn
+        root = zarr.open_group(str(zarr_path), mode="w" if overwrite else "a", zarr_format=2)
+        arr = root.create_array(
+            name="data",
+            shape=(Z, Y, X),
+            chunks=chunks,
+            dtype=vol_np.dtype,
+            compressor=compressor,
+            overwrite=overwrite,
+            fill_value=0,
+        )
+
+
+    except TypeError:
+        root = zarr.open_group(str(zarr_path), mode="w" if overwrite else "a")
+        arr = root.create_dataset(
+            name="data",
+            shape=(Z, Y, X),
+            chunks=chunks,
+            dtype=vol_np.dtype,
+            compressor=compressor,
+            overwrite=overwrite,
+            fill_value=0,
+        )
+
 
     for z in range(Z):
         arr[z, :, :] = vol_np[z]
@@ -127,7 +270,7 @@ def _write_volume_to_zarr_streaming(vol_np: np.ndarray, zarr_path: Path, chunks:
 def _flatten_one_slice(job):
     z, img, ref_line, lines_dict, fill = job
 
-    flat_img, shift_z, target_z = sfu.flatten_to_path(
+    flat_img, shift_z, target_z = flatten_to_path(
         img,
         ref_line,
         fill=fill,
@@ -136,7 +279,7 @@ def _flatten_one_slice(job):
 
     flat_lines = {}
     for name, line in lines_dict.items():
-        flat_lines[name] = sfu.warp_line_by_shift(
+        flat_lines[name] = warp_line_by_shift(
             line,
             shift_z,
             direction="to_flat",
@@ -236,6 +379,8 @@ def ensure_flattened_artifacts(
     flatten_with: str,
     *,
     layers_root: str | Path,
+    annotation_root: str | Path = None,
+    make_annotation_zarr: bool=True,
     flattened_artifacts_root: Path=Path('/Volumes/T9/iowa_research/Han_AIR_Dec_2025/flattened_artifacts'),
     z_stride: int = 1,
     overwrite: bool = False,
@@ -265,6 +410,20 @@ def ensure_flattened_artifacts(
     flat_layers_npz = (flattened_artifacts_root/vol_name).with_suffix(f".{flatten_with}.flat_layers.npz")
     flat_meta_npz = (flattened_artifacts_root/vol_name).with_suffix(f".{flatten_with}.flat_meta.npz")
 
+    annotation_zarr = None
+    if make_annotation_zarr:
+        annotation_path = Path(annotation_root) / vol_path.with_suffix(".labels.zarr").name
+        if annotation_path.exists():
+            annotation_zarr = ensure_image_zarr(
+                annotation_path,
+                z_stride=z_stride,
+                overwrite=False,
+            )
+        else:
+            print(f"[info] annotation file not found for {vol_path.name}: {annotation_path}")
+
+
+
     need_build = overwrite or any(
         not p.exists()
         for p in [flat_meta_npz]
@@ -280,10 +439,12 @@ def ensure_flattened_artifacts(
         return {
             "image_zarr": img_zarr if make_image_zarr else None,
             "label_zarr": lbl_zarr if make_label_zarr else None,
+            "annotation_zarr":annotation_zarr,
             "flat_layers_npz": flat_layers_npz if save_flat_layers_npz else None,
             "flat_meta_npz": flat_meta_npz,
         }
 
+    print(f"[building] flattened artifacts for {vol_path.name} using {flatten_with}. asserting z_stride aligns.")
     layer_path = fu.new_get_corresponding_layer_path(vol_path, layers_root=layers_root)
     if not layer_path.exists():
         raise FileNotFoundError(f"Layer file not found for {vol_path}: {layer_path}")
@@ -347,6 +508,79 @@ def ensure_flattened_artifacts(
     return {
         "image_zarr": img_zarr if make_image_zarr else None,
         "label_zarr": lbl_zarr if make_label_zarr else None,
+        "annotation_zarr": None,
         "flat_layers_npz": flat_layers_npz if save_flat_layers_npz else None,
         "flat_meta_npz": flat_meta_npz,
     }
+
+def ensure_nonflat_artifacts(
+    vol_path: Path,
+    *,
+    layers_root: str | Path,
+    annotation_root: str | Path | None = None,
+    z_stride: int = 1,
+    overwrite: bool = False,
+    make_image_zarr: bool = True,
+    make_label_zarr: bool = True,
+    make_annotation_zarr: bool = True,
+):
+    """
+    Build/reuse native (non-flattened) artifacts for one volume.
+
+    Returns paths for:
+      - raw image zarr
+      - raw label zarr-group
+      - annotation zarr (ONH/fovea), if present
+
+    Notes
+    -----
+    This mirrors the current napari viewer behavior for annotations:
+      * annotation path is resolved as annotation_root / <vol_stem>.labels.zarr
+      * annotation zarr is always reused with overwrite=False
+      * z-stride is handled later at load time, not in the cached annotation path
+    """
+    vol_path = Path(vol_path)
+    layers_root = Path(layers_root)
+
+    if annotation_root is None:
+        annotation_root = Path(fu.C["annotation_root"])
+    else:
+        annotation_root = Path(annotation_root)
+
+    out = {
+        "image_zarr": None,
+        "label_zarr": None,
+        "annotation_zarr": None,
+    }
+
+    if make_image_zarr:
+        out["image_zarr"] = ensure_image_zarr(
+            vol_path,
+            z_stride=z_stride,
+            overwrite=overwrite,
+        )
+
+    if make_label_zarr:
+        layer_path = fu.new_get_corresponding_layer_path(vol_path, layers_root=layers_root)
+        if not layer_path.exists():
+            raise FileNotFoundError(f"Layer file not found for {vol_path}: {layer_path}")
+
+        out["label_zarr"] = ensure_labels_zarr(
+            vol_path,
+            z_stride=z_stride,
+            overwrite=overwrite,
+            layers_root=layers_root,
+        )
+
+    if make_annotation_zarr:
+        annotation_path = Path(annotation_root) / vol_path.with_suffix(".labels.zarr").name
+        if annotation_path.exists():
+            out["annotation_zarr"] = ensure_image_zarr(
+                annotation_path,
+                z_stride=z_stride,
+                overwrite=False,
+            )
+        else:
+            print(f"[info] annotation file not found for {vol_path.name}: {annotation_path}")
+
+    return out

@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING
 
 import sys
 from pathlib import Path
+
+import code_files.segmentation_code.flattening_utility_functions
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # adds Han_AIR/ to path
 from attr import asdict, dataclass
 from matplotlib.backends.backend_pdf import PdfPages
@@ -546,8 +548,8 @@ def sweep_to_arrayboard(board, fn, *, base_kwargs: dict, grid: dict,
 
 def flatten_for_plotting(img, line_dict, flattener):
     """as a preproc step, we flatten a bunch of lines and img to aid visualization"""
-    flat_img,shift_y_full,target_y = suf.flatten_to_path(img,flattener)
-    line_dict_flat = {k:suf.warp_line_by_shift(v,shift_y_full,direction="to_flat") 
+    flat_img,shift_y_full,target_y = code_files.segmentation_code.flattening_utility_functions.flatten_to_path(img,flattener)
+    line_dict_flat = {k:code_files.segmentation_code.flattening_utility_functions.warp_line_by_shift(v,shift_y_full,direction="to_flat") 
                       for k,v in line_dict.items()}
     return flat_img,line_dict_flat
 
