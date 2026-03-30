@@ -173,6 +173,7 @@ def load_one_volume(
 
 
     flattener_name = None
+    texture = {}
     if view_mode == "nonflat":
         artifacts = ensure_nonflat_artifacts(
             vp,
@@ -212,7 +213,7 @@ def load_one_volume(
             include_texture_zarr=show_texture_overlay,
             texture_zarr_root=texture_zarr_root,
         )
-        assert np.load(artifacts['flat_meta_npz'])['z_stride'] == z_stride
+        # assert np.load(artifacts['flat_meta_npz'])['z_stride'] == z_stride -- cannot assert this if later usng zstirde as below with [::z_stride]
 
         img = da.from_zarr(str(artifacts["image_zarr"])+'/data')[::z_stride]
         img = img.rechunk((1, img.shape[-2], img.shape[-1]))
@@ -225,7 +226,6 @@ def load_one_volume(
 
 
 
-        texture = {}
         if show_texture_overlay and artifacts["texture_zarr"] is not None:
             tg = zarr.open_group(str(artifacts["texture_zarr"]), mode="r")
 

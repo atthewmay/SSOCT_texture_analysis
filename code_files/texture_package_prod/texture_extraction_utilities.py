@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
+from itertools import product
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -32,6 +33,109 @@ class DenseMapMeta:
     image_shape: tuple[int, int]
 
 
+@dataclass(frozen=True)
+class TextureSweepParams:
+    """
+    Same class used for:
+      1. the public sweep definition (fields can be tuples/lists)
+      2. the concrete single-run params passed into engine + per-B-scan worker
+    """
+    window: int | tuple[int, ...] = 31
+    levels: int | tuple[int, ...] = 32
+    gaussian_sigma: float | tuple[float, ...] = 0.0
+    downsample_factor: int | tuple[int, ...] = 1
+
+    @staticmethod
+    def _to_tuple(value):
+        if isinstance(value, np.ndarray):
+            value = value.tolist()
+        if isinstance(value, (list, tuple)):
+            return tuple(value)
+        return (value,)
+
+    def iter_cases(self):
+        windows = tuple(int(v) for v in self._to_tuple(self.window))
+        levels = tuple(int(v) for v in self._to_tuple(self.levels))
+        sigmas = tuple(float(v) for v in self._to_tuple(self.gaussian_sigma))
+        downs = tuple(int(v) for v in self._to_tuple(self.downsample_factor))
+
+        for window, levels, gaussian_sigma, downsample_factor in product(
+            windows, levels, sigmas, downs
+        ):
+            yield TextureSweepParams(
+                window=window,
+                levels=levels,
+                gaussian_sigma=gaussian_sigma,
+                downsample_factor=downsample_factor,
+            )
+
+    def concrete(self) -> "TextureSweepParams":
+        cases = list(self.iter_cases())
+        if len(cases) != 1:
+            raise ValueError(
+                "TextureSweepParams must be concrete here. "
+                "Pass a single case, not a sweep."
+            )
+        return cases[0]
+
+    def tag(self) -> str:
+        p = self.concrete()
+        return (
+            f"window={int(p.window)}__"
+            f"levels={int(p.levels)}__"
+            f"gaussian={float(p.gaussian_sigma):g}__"
+            f"downsample={int(p.downsample_factor)}"
+        )
+
+    def as_attrs(self) -> dict:
+        p = self.concrete()
+        return {
+            "window": int(p.window),
+            "levels": int(p.levels),
+            "gaussian_sigma": float(p.gaussian_sigma),
+            "downsample_factor": int(p.downsample_factor),
+        }
+
+
+def preprocess_texture_image(
+    image: np.ndarray,
+    texture_params: TextureSweepParams,
+) -> np.ndarray:
+    """
+    Apply Gaussian smoothing and optional downsample->upsample interpolation
+    before texture extraction. Output remains same shape as input.
+    """
+    p = texture_params.concrete()
+    img = np.asarray(image, dtype=np.float32)
+
+    if float(p.gaussian_sigma) > 0:
+        img = ndimage.gaussian_filter(img, sigma=float(p.gaussian_sigma))
+
+    ds = int(p.downsample_factor)
+    if ds > 1:
+        small_shape = (
+            max(1, int(np.round(img.shape[0] / ds))),
+            max(1, int(np.round(img.shape[1] / ds))),
+        )
+
+        img_small = resize(
+            img,
+            small_shape,
+            order=1,
+            preserve_range=True,
+            anti_aliasing=True,
+        ).astype(np.float32, copy=False)
+
+        img = resize(
+            img_small,
+            img.shape,
+            order=1,
+            preserve_range=True,
+            anti_aliasing=False,
+        ).astype(np.float32, copy=False)
+
+    return img.astype(np.float32, copy=False)
+
 GLCM_FEATURES = ('contrast', 'dissimilarity', 'homogeneity', 'energy', 'correlation', 'ASM')
 
 
@@ -48,11 +152,18 @@ def robust_rescale_uint(image: np.ndarray, levels: int = 32, clip_percentiles: t
 
 # ---------- small patch features ----------
 
-def _nanmean_std_percentiles(values: np.ndarray) -> dict[str, float]:
+def _nanmean_std_percentiles(values: np.ndarray, bins: int = 32) -> dict[str, float]:
     values = values[np.isfinite(values)]
     if values.size == 0:
-        return {'mean': np.nan, 'std': np.nan, 'p10': np.nan, 'p50': np.nan, 'p90': np.nan}
-    hist, _ = np.histogram(values, bins=32)
+        return {
+            'mean': np.nan,
+            'std': np.nan,
+            'entropy': np.nan,
+            'p10': np.nan,
+            'p50': np.nan,
+            'p90': np.nan,
+        }
+    hist, _ = np.histogram(values, bins=int(bins))
     probs = hist / max(hist.sum(), 1)
     return {
         'mean': float(np.nanmean(values)),
@@ -62,7 +173,6 @@ def _nanmean_std_percentiles(values: np.ndarray) -> dict[str, float]:
         'p50': float(np.nanpercentile(values, 50)),
         'p90': float(np.nanpercentile(values, 90)),
     }
-
 
 def glcm_features_patch(patch_q: np.ndarray, levels: int = 32) -> dict[str, float]:
     glcm = graycomatrix(
@@ -226,9 +336,8 @@ def ngtdm_features_patch(patch_q: np.ndarray, levels: int = 32) -> dict[str, flo
         'ngtdm_strength': float(strength),
     }
 
-
-def lbp_features_patch(patch: np.ndarray) -> dict[str, float]:
-    patch_u = robust_rescale_uint(patch, levels=32)
+def lbp_features_patch(patch: np.ndarray, levels: int = 32) -> dict[str, float]:
+    patch_u = robust_rescale_uint(patch, levels=int(levels))
     lbp = local_binary_pattern(patch_u, P=8, R=1, method='uniform')
     hist, _ = np.histogram(lbp, bins=np.arange(12), density=True)
     return {
@@ -303,6 +412,7 @@ def retinal_thickness_map(
 
 # ---------- dense map engine ----------
 
+
 def _feature_dict_for_patch(
     patch: np.ndarray,
     patch_q: np.ndarray,
@@ -311,7 +421,7 @@ def _feature_dict_for_patch(
 ) -> dict[str, float]:
     out = {}
     if 'firstorder' in families:
-        out.update(_nanmean_std_percentiles(patch))
+        out.update(_nanmean_std_percentiles(patch, bins=levels))
     if 'glcm' in families:
         out.update(glcm_features_patch(patch_q, levels=levels))
     if 'glrlm' in families:
@@ -323,11 +433,10 @@ def _feature_dict_for_patch(
     if 'ngtdm' in families:
         out.update(ngtdm_features_patch(patch_q, levels=levels))
     if 'lbp' in families:
-        out.update(lbp_features_patch(patch))
+        out.update(lbp_features_patch(patch, levels=levels))
     if 'gradient' in families:
         out.update(gradient_orientation_features_patch(patch))
     return out
-
 
 def _row_worker(
     r: int,
@@ -422,43 +531,59 @@ def resample_map_to_image(feature_map: np.ndarray, meta: DenseMapMeta, order: in
     """Resize a sampled-grid map back to image size for quick visualization."""
     return resize(feature_map, meta.image_shape, order=order, preserve_range=True, anti_aliasing=False).astype(np.float32)
 
+
 def _compute_one_bscan_texture_fullres(
-    z: int,
-    bscan: np.ndarray,
-    upper: np.ndarray,
-    lower: np.ndarray,
-    window: int,
-    step: int,
-    pad: int,
-    families: tuple[str, ...],
-    include_wavelet: bool,
-    levels: int,
-    features_to_keep: tuple[str, ...] | None = None,
-    n_jobs: int = 1,
-) -> tuple[int, dict[str, np.ndarray]]:
+        z: int,
+        bscan: np.ndarray,
+        upper: np.ndarray,
+        lower: np.ndarray,
+        step: int,
+        pad: int,
+        families: tuple[str, ...],
+        include_wavelet: bool,
+        texture_params: TextureSweepParams,
+        features_to_keep: tuple[str, ...] | None = None,
+        n_jobs: int = 1,
+    ) -> tuple[int, dict[str, np.ndarray]]:
     """
     Compute selected dense texture maps for one B-scan, then resample/scatter them
     back into full (Y, X) image coordinates with NaN outside the processed crop.
 
     I think really to get the best texture features we should pre-flatten (like for the horizontal and diagnoal runs, the horizontal structures will come out much better)
     """
-    y_min = int(np.floor(np.minimum(upper, lower).min() - pad - window))
-    y_max = int(np.ceil(np.maximum(upper, lower).max() + pad + window))
+    texture_params = texture_params.concrete()
+    y_min = int(np.floor(np.minimum(upper, lower).min() - pad - texture_params.window))
+    y_max = int(np.ceil(np.maximum(upper, lower).max() + pad + texture_params.window))
     y_min = max(0, y_min)
     y_max = min(bscan.shape[0], y_max)
 
+
     crop = bscan[y_min:y_max]
+    crop = preprocess_texture_image(crop, texture_params)
 
     maps, meta = compute_dense_texture_maps(
         crop,
-        window=window,
+        window=int(texture_params.window),
         step=step,
         mask=None,
         families=families,
         include_wavelet=include_wavelet,
-        levels=levels,
+        levels=int(texture_params.levels),
         n_jobs=n_jobs,
     )
+
+    # crop = bscan[y_min:y_max]
+
+    # maps, meta = compute_dense_texture_maps(
+    #     crop,
+    #     window=window,
+    #     step=step,
+    #     mask=None,
+    #     families=families,
+    #     include_wavelet=include_wavelet,
+    #     levels=levels,
+    #     n_jobs=n_jobs,
+    # )
 
     if features_to_keep is not None:
         keep = set(features_to_keep)
@@ -529,10 +654,11 @@ def compute_bscan_texture_volumes_to_zarr(
     families: tuple[str, ...] = ('firstorder', 'glcm', 'glrlm', 'glszm', 'gldm', 'ngtdm', 'lbp', 'gradient'),
     include_wavelet: bool = False,
     levels: int = 32,
+    texture_params: TextureSweepParams | None = None,
     features_to_keep: tuple[str, ...] | None = None,
     chunks: tuple[int, int, int] | None = None,
     n_jobs: int = 1,
-    single_bscan_n_jobs: int=1,
+    single_bscan_n_jobs: int = 1,
     overwrite: bool = True,
 ) -> Path:
     """
@@ -547,6 +673,17 @@ def compute_bscan_texture_volumes_to_zarr(
 
     Each dataset has shape (Z, Y, X), with NaN for unsampled z slices when z_step > 1.
     """
+
+    #for backwards compat
+    if texture_params is None:
+        texture_params = TextureSweepParams(
+            window=window,
+            levels=levels,
+            gaussian_sigma=0.0,
+            downsample_factor=1,
+        )
+    texture_params = texture_params.concrete()
+    
     vol = np.asarray(volume)
     if vol.ndim != 3:
         raise ValueError('volume must be (Z, Y, X)')
@@ -567,14 +704,13 @@ def compute_bscan_texture_volumes_to_zarr(
         bscan=vol[z0].astype(np.float32),
         upper=upper_bound[z0].astype(np.float32),
         lower=lower_bound[z0].astype(np.float32),
-        window=window,
         step=step,
         pad=pad,
         families=families,
         include_wavelet=include_wavelet,
-        levels=levels,
+        texture_params=texture_params,
         features_to_keep=features_to_keep,
-        n_jobs=single_bscan_n_jobs
+        n_jobs=single_bscan_n_jobs,
     )
     feature_names = sorted(first_maps)
     if not feature_names:
@@ -589,13 +725,16 @@ def compute_bscan_texture_volumes_to_zarr(
     )
 
     root.attrs['z_step'] = int(z_step)
-    root.attrs['window'] = int(window)
+    root.attrs['window'] = int(texture_params.window)
     root.attrs['step'] = int(step)
     root.attrs['pad'] = int(pad)
-    root.attrs['levels'] = int(levels)
+    root.attrs['levels'] = int(texture_params.levels)
+    root.attrs['gaussian_sigma'] = float(texture_params.gaussian_sigma)
+    root.attrs['downsample_factor'] = int(texture_params.downsample_factor)
     root.attrs['families'] = list(families)
     root.attrs['include_wavelet'] = bool(include_wavelet)
     root.attrs['features_to_keep'] = None if features_to_keep is None else list(features_to_keep)
+    root.attrs['texture_params'] = texture_params.as_attrs()
 
     # Write the probe slice immediately.
     for name, arr in first_maps.items():
@@ -610,13 +749,13 @@ def compute_bscan_texture_volumes_to_zarr(
                 bscan=vol[z].astype(np.float32),
                 upper=upper_bound[z].astype(np.float32),
                 lower=lower_bound[z].astype(np.float32),
-                window=window,
                 step=step,
                 pad=pad,
                 families=families,
                 include_wavelet=include_wavelet,
-                levels=levels,
+                texture_params=texture_params,
                 features_to_keep=features_to_keep,
+                n_jobs=single_bscan_n_jobs,
             )
             for name, arr in maps.items():
                 zarr_datasets[name][z, :, :] = arr
@@ -629,14 +768,13 @@ def compute_bscan_texture_volumes_to_zarr(
                     vol[z].astype(np.float32),
                     upper_bound[z].astype(np.float32),
                     lower_bound[z].astype(np.float32),
-                    window,
                     step,
                     pad,
                     families,
                     include_wavelet,
-                    levels,
+                    texture_params,
                     features_to_keep,
-                    n_jobs = single_bscan_n_jobs,
+                    single_bscan_n_jobs,
                 )
                 for z in remaining_z
             ]
