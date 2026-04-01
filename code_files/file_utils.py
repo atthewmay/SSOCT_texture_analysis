@@ -574,7 +574,7 @@ def load_algorithm_key_lookup(excel_path):
 
 
 def get_algorithm_key_from_filepath(filepath):
-    lookup = load_algorithm_key_lookup("/Users/matthewhunt/Research/Iowa_Research/Han_AIR/data/ID_and_laterality_to_algo_type.xlsx")
+    lookup = load_algorithm_key_lookup(C['ID_to_algorithm_lookup_path'])
     s = str(Path(filepath).name)
 
     integer_id = int(re.search(r'(\d+)_Cube', s).group(1))

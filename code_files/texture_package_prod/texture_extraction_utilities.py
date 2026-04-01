@@ -578,11 +578,12 @@ def _compute_one_bscan_texture_compact(
     bscan: np.ndarray,
     y_min: int,
     y_max: int,
-    window: int,
+    # window: int,
     step: int,
     families: tuple[str, ...],
     include_wavelet: bool,
-    levels: int,
+    # levels: int,
+    texture_params: TextureSweepParams,
     features_to_keep: tuple[str, ...] | None = None,
     n_jobs: int = 1,
 ) -> tuple[int, dict[str, np.ndarray], DenseMapMeta]:
@@ -591,15 +592,17 @@ def _compute_one_bscan_texture_compact(
     No upsampling. No full-size padding.
     """
     crop = bscan[y_min:y_max]
+    texture_params = texture_params.concrete()
+    crop = preprocess_texture_image(crop, texture_params)
 
     maps, meta = compute_dense_texture_maps(
         crop,
-        window=window,
+        window=int(texture_params.window),
         step=step,
         mask=None,
         families=families,
         include_wavelet=include_wavelet,
-        levels=levels,
+        levels=int(texture_params.levels),
         n_jobs=n_jobs,
     )
 
@@ -625,6 +628,7 @@ def compute_bscan_texture_volumes_to_compact_npz(
     features_to_keep: tuple[str, ...] | None = None,
     n_jobs: int = 1,
     single_bscan_n_jobs: int = 1,
+    texture_params: TextureSweepParams | None = None,
 ) -> Path:
     """
     Compact dense texture artifact.
@@ -643,6 +647,8 @@ def compute_bscan_texture_volumes_to_compact_npz(
     if lower_bound.shape != (vol.shape[0], vol.shape[2]):
         raise ValueError('lower_bound must have shape (Z, X)')
 
+    texture_params = texture_params.concrete()
+
     z_idx = np.arange(0, vol.shape[0], z_step, dtype=int)
     if len(z_idx) == 0:
         raise ValueError('No z indices selected')
@@ -652,7 +658,7 @@ def compute_bscan_texture_volumes_to_compact_npz(
         lower_bound=lower_bound,
         full_y=vol.shape[1],
         pad=pad,
-        window=window,
+        window=texture_params.window,
     )
 
     # Probe first slice to discover feature names and sampled grid size.
@@ -662,11 +668,12 @@ def compute_bscan_texture_volumes_to_compact_npz(
         bscan=vol[z0].astype(np.float32),
         y_min=y_min,
         y_max=y_max,
-        window=window,
+        # window=window,
         step=step,
         families=families,
         include_wavelet=include_wavelet,
-        levels=levels,
+        texture_params=texture_params,
+        # levels=levels,
         features_to_keep=features_to_keep,
         n_jobs=single_bscan_n_jobs,
     )
@@ -690,11 +697,12 @@ def compute_bscan_texture_volumes_to_compact_npz(
                 bscan=vol[z].astype(np.float32),
                 y_min=y_min,
                 y_max=y_max,
-                window=window,
+                # window=window,
                 step=step,
                 families=families,
+                texture_params=texture_params,
                 include_wavelet=include_wavelet,
-                levels=levels,
+                # levels=levels,
                 features_to_keep=features_to_keep,
                 n_jobs=single_bscan_n_jobs,
             )
@@ -703,19 +711,18 @@ def compute_bscan_texture_volumes_to_compact_npz(
     else:
         with ProcessPoolExecutor(max_workers=n_jobs) as ex:
             futures = [
-                ex.submit(
+                    ex.submit(
                     _compute_one_bscan_texture_compact,
-                    int(z),
-                    vol[z].astype(np.float32),
-                    y_min,
-                    y_max,
-                    window,
-                    step,
-                    families,
-                    include_wavelet,
-                    levels,
-                    features_to_keep,
-                    single_bscan_n_jobs,
+                    z=int(z),
+                    bscan=vol[z].astype(np.float32),
+                    y_min=y_min,
+                    y_max=y_max,
+                    step=step,
+                    families=families,
+                    include_wavelet=include_wavelet,
+                    texture_params=texture_params,
+                    features_to_keep=features_to_keep,
+                    n_jobs=single_bscan_n_jobs,
                 )
                 for z in z_idx[1:]
             ]
@@ -738,13 +745,19 @@ def compute_bscan_texture_volumes_to_compact_npz(
         row_centers_full=(first_meta.row_centers + y_min).astype(int).tolist(),
         col_centers=first_meta.col_centers.astype(int).tolist(),
         z_indices=z_idx.astype(int).tolist(),
-        window=int(window),
+        # window=int(window),
         step=int(step),
         pad=int(pad),
-        levels=int(levels),
+        # levels=int(levels),
         include_wavelet=bool(include_wavelet),
         families=list(families),
         features=feature_names,
+
+        texture_params= texture_params.as_attrs(),
+        window= int(texture_params.window),
+        levels= int(texture_params.levels),
+        gaussian_sigma= float(texture_params.gaussian_sigma),
+        downsample_factor= int(texture_params.downsample_factor),
     )
 
     payload = {
