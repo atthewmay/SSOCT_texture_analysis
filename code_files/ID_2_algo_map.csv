@@ -1,79 +1,79 @@
-Integer ID,	Laterality,	Algorithm Type
-10,	OD,	Choroidal
-10,	OS,	Original
-11,	OD,	Original
-11,	OS,	Original
-13,	OD,	Original
-13,	OS,	Original
-14,	OD,	Original
-14,	OS,	Original
-16,	OD,	Original
-16,	OS,	Original
-17,	OD,	EZ
-17,	OS,	Original
-21,	OD,	Original
-21,	OS,	Original
-22,	OD,	Original
-22,	OS,	Original
-24,	OD,	Original
-24,	OS,	EZ
-25,	OD,	Original
-25,	OS,	Original
-28,	OD,	Original
-28,	OS,	Choroidal
-30,	OD,	Original
-30,	OS,	Original
-31,	OD,	Original
-31,	OS,	Original
-32,	OD,	Original
-32,	OS,	Original
-33,	OD,	Choroidal
-33,	OS,	Choroidal
-34,	OD,	Choroidal
-34,	OS,	Choroidal
-35,	OD,	Original
-35,	OS,	Original
-36,	OD,	Choroidal
-36,	OS,	Choroidal
-37,	OD,	EZ
-37,	OS,	Original
-38,	OD,	Choroidal
-38,	OS,	Choroidal
-39,	OD,	Original
-39,	OS,	Original
-40,	OD,	Original
-40,	OS,	Original
-41,	OD,	EZ
-41,	OS,	EZ
-42,	OD,	Original
-42,	OS,	EZ
-43,	OD,	Original
-43,	OS,	Choroidal
-44,	OD,	Original
-44,	OS,	Original
-45,	OD,	Original
-45,	OS,	Original
-46,	OD,	Original
-46,	OS,	Original
-47,	OD,	Original
-47,	OS,	Original
-48,	OD,	Original
-48,	OS,	Original
-1,	OD,	Choroidal
-1,	OS,	EZ
-2,	OD,	EZ
-2,	OS,	EZ
-3,	OD,	Original
-3,	OS,	Original
-4,	OD,	Original
-4,	OS,	Original
-5,	OD,	Original
-5,	OS,	Original
-6,	OD,	Original
-6,	OS,	Original
-7,	OD,	Original
-7,	OS,	Original
-8,	OD,	Original
-8,	OS,	Original
-9,	OD,	Original
-9,	OS,	Original
+Integer ID,Laterality,Algorithm Type
+10,OD,Choroidal
+10,OS,Original
+11,OD,Original
+11,OS,Original
+13,OD,Original
+13,OS,Original
+14,OD,Original
+14,OS,Original
+16,OD,Original
+16,OS,Original
+17,OD,EZ
+17,OS,Original
+21,OD,Original
+21,OS,Original
+22,OD,Original
+22,OS,Original
+24,OD,Original
+24,OS,EZ
+25,OD,Original
+25,OS,Original
+28,OD,Original
+28,OS,Choroidal
+30,OD,Original
+30,OS,Original
+31,OD,Original
+31,OS,Original
+32,OD,Original
+32,OS,Original
+33,OD,Choroidal
+33,OS,Choroidal
+34,OD,Choroidal
+34,OS,Choroidal
+35,OD,Original
+35,OS,Original
+36,OD,Choroidal
+36,OS,Choroidal
+37,OD,EZ
+37,OS,Original
+38,OD,Choroidal
+38,OS,Choroidal
+39,OD,Original
+39,OS,Original
+40,OD,Original
+40,OS,Original
+41,OD,EZ
+41,OS,EZ
+42,OD,Original
+42,OS,EZ
+43,OD,Original
+43,OS,Choroidal
+44,OD,Original
+44,OS,Original
+45,OD,Original
+45,OS,Original
+46,OD,Original
+46,OS,Original
+47,OD,Original
+47,OS,Original
+48,OD,Original
+48,OS,Original
+1,OD,Choroidal
+1,OS,EZ
+2,OD,EZ
+2,OS,EZ
+3,OD,Original
+3,OS,Original
+4,OD,Original
+4,OS,Original
+5,OD,Original
+5,OS,Original
+6,OD,Original
+6,OS,Original
+7,OD,Original
+7,OS,Original
+8,OD,Original
+8,OS,Original
+9,OD,Original
+9,OS,Original
