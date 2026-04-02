@@ -15,7 +15,7 @@ from skimage.transform import resize
 from skimage.measure import label as cc_label
 import code_files.segmentation_code.segmentation_plot_utils as spu
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from pathlib import Path
 
 import numcodecs
@@ -534,6 +534,397 @@ def resample_map_to_image(feature_map: np.ndarray, meta: DenseMapMeta, order: in
 
 _COMPACT_TEXTURE_META_KEY = "__manifest_json__"
 
+def _open_compact_texture_zarr_group(
+    out_zarr_path: str | Path,
+    z_len: int,
+    rc_shape: tuple[int, int],
+    feature_names: list[str],
+    chunks: tuple[int, int, int] | None = None,
+    overwrite: bool = True,
+):
+    """
+    Compact sampled-grid storage:
+        one dataset per feature, shaped (Z_selected, R, C)
+    """
+    out_zarr_path = Path(out_zarr_path)
+    compressor = numcodecs.Blosc(
+        cname='lz4',
+        clevel=3,
+        shuffle=numcodecs.Blosc.BITSHUFFLE,
+    )
+
+    if chunks is None:
+        rdim, cdim = rc_shape
+        chunks = (1, min(256, rdim), min(256, cdim))
+
+    try:
+        root = zarr.open_group(
+            str(out_zarr_path),
+            mode='w' if overwrite else 'a',
+            zarr_format=2,
+        )
+    except TypeError:
+        root = zarr.open_group(
+            str(out_zarr_path),
+            mode='w' if overwrite else 'a',
+        )
+
+    datasets = {}
+    shape = (int(z_len), int(rc_shape[0]), int(rc_shape[1]))
+    for name in feature_names:
+        datasets[name] = root.create_array(
+            name=name,
+            shape=shape,
+            chunks=chunks,
+            dtype=np.float32,
+            compressor=compressor,
+            overwrite=overwrite,
+            fill_value=np.nan,
+        )
+
+    root.attrs['compact_shape'] = shape
+    root.attrs['chunks'] = tuple(int(v) for v in chunks)
+    return root, datasets
+
+
+def _compact_zarr_feature_names(root) -> list[str]:
+    return sorted(root.array_keys())
+
+
+def load_compact_texture_zarr(zarr_path: str | Path):
+    root = zarr.open_group(str(zarr_path), mode='r')
+    manifest_json = root.attrs.get('manifest_json', None)
+    if manifest_json is None:
+        raise ValueError(f'No manifest_json found in compact texture zarr: {zarr_path}')
+    manifest = json.loads(manifest_json)
+    return root, manifest
+
+
+def _submit_one_compact_bscan_future(
+    ex,
+    vol,
+    out_i: int,
+    z: int,
+    y_min: int,
+    y_max: int,
+    step: int,
+    families: tuple[str, ...],
+    include_wavelet: bool,
+    texture_params: TextureSweepParams,
+    features_to_keep: tuple[str, ...] | None,
+    single_bscan_n_jobs: int,
+):
+    return ex.submit(
+        _compute_one_bscan_texture_compact,
+        z=int(z),
+        bscan=np.asarray(vol[z], dtype=np.float32),
+        y_min=y_min,
+        y_max=y_max,
+        step=step,
+        families=families,
+        include_wavelet=include_wavelet,
+        texture_params=texture_params,
+        features_to_keep=features_to_keep,
+        n_jobs=single_bscan_n_jobs,
+    ), out_i
+
+
+def compute_bscan_texture_volumes_to_compact_zarr(
+    volume,
+    upper_bound: np.ndarray,
+    lower_bound: np.ndarray,
+    out_zarr_path: str | Path,
+    z_step: int = 1,
+    # window: int = 31,   # kept for backwards compatibility, but texture_params.window is used
+    step: int = 4,
+    pad: int = 10,
+    families: tuple[str, ...] = ('firstorder', 'glcm', 'glrlm', 'glszm', 'gldm', 'ngtdm', 'lbp', 'gradient'),
+    include_wavelet: bool = False,
+    # levels: int = 32,   # kept for backwards compatibility, but texture_params.levels is used
+    features_to_keep: tuple[str, ...] | None = None,
+    n_jobs: int = 1,
+    single_bscan_n_jobs: int = 1,
+    texture_params: TextureSweepParams | None = None,
+    overwrite: bool = True,
+    chunks: tuple[int, int, int] | None = None,
+) -> Path:
+    """
+    Memory-safe compact dense texture artifact.
+
+    Writes one compact zarr group per volume with:
+      - one dataset per feature: (Z_selected, R, C)
+      - manifest in root attrs
+    """
+    texture_params = texture_params.concrete()
+
+    vol = volume
+    if getattr(vol, 'ndim', None) != 3:
+        raise ValueError('volume must be (Z, Y, X)')
+    if upper_bound.shape != (vol.shape[0], vol.shape[2]):
+        raise ValueError('upper_bound must have shape (Z, X)')
+    if lower_bound.shape != (vol.shape[0], vol.shape[2]):
+        raise ValueError('lower_bound must have shape (Z, X)')
+
+    z_idx = np.arange(0, int(vol.shape[0]), z_step, dtype=int)
+    if len(z_idx) == 0:
+        raise ValueError('No z indices selected')
+
+    y_min, y_max = _compute_global_texture_crop_bounds(
+        upper_bound=upper_bound,
+        lower_bound=lower_bound,
+        full_y=int(vol.shape[1]),
+        pad=pad,
+        window=int(texture_params.window),
+    )
+
+    z0 = int(z_idx[0])
+    _, first_maps, first_meta = _compute_one_bscan_texture_compact(
+        z=z0,
+        bscan=np.asarray(vol[z0], dtype=np.float32),
+        y_min=y_min,
+        y_max=y_max,
+        step=step,
+        families=families,
+        include_wavelet=include_wavelet,
+        texture_params=texture_params,
+        features_to_keep=features_to_keep,
+        n_jobs=single_bscan_n_jobs,
+    )
+
+    feature_names = sorted(first_maps)
+    if not feature_names:
+        raise ValueError('No feature maps were produced')
+
+    rc_shape = first_maps[feature_names[0]].shape
+
+    root, zarr_datasets = _open_compact_texture_zarr_group(
+        out_zarr_path=out_zarr_path,
+        z_len=len(z_idx),
+        rc_shape=rc_shape,
+        feature_names=feature_names,
+        chunks=chunks,
+        overwrite=overwrite,
+    )
+
+    manifest = dict(
+        format='compact_texture_zarr_v1',
+        volume_shape=[int(v) for v in vol.shape],
+        crop_y_bounds=[int(y_min), int(y_max)],
+        crop_shape=[int(y_max - y_min), int(vol.shape[2])],
+        row_centers_full=(first_meta.row_centers + y_min).astype(int).tolist(),
+        col_centers=first_meta.col_centers.astype(int).tolist(),
+        z_indices=z_idx.astype(int).tolist(),
+        step=int(step),
+        pad=int(pad),
+        include_wavelet=bool(include_wavelet),
+        families=list(families),
+        features=feature_names,
+        texture_params=texture_params.as_attrs(),
+        window=int(texture_params.window),
+        levels=int(texture_params.levels),
+        gaussian_sigma=float(texture_params.gaussian_sigma),
+        downsample_factor=int(texture_params.downsample_factor),
+    )
+
+    root.attrs['manifest_json'] = json.dumps(manifest)
+    root.attrs['texture_params'] = texture_params.as_attrs()
+    root.attrs['z_step'] = int(z_step)
+    root.attrs['step'] = int(step)
+    root.attrs['pad'] = int(pad)
+    root.attrs['include_wavelet'] = bool(include_wavelet)
+    root.attrs['families'] = list(families)
+    root.attrs['features_to_keep'] = None if features_to_keep is None else list(features_to_keep)
+
+    for name, arr in first_maps.items():
+        zarr_datasets[name][0, :, :] = arr.astype(np.float32, copy=False)
+
+    remaining = [(out_i, int(z)) for out_i, z in enumerate(z_idx[1:], start=1)]
+
+    if n_jobs == 1:
+        for out_i, z in remaining:
+            _, maps, _ = _compute_one_bscan_texture_compact(
+                z=z,
+                bscan=np.asarray(vol[z], dtype=np.float32),
+                y_min=y_min,
+                y_max=y_max,
+                step=step,
+                families=families,
+                include_wavelet=include_wavelet,
+                texture_params=texture_params,
+                features_to_keep=features_to_keep,
+                n_jobs=single_bscan_n_jobs,
+            )
+            for name, arr in maps.items():
+                zarr_datasets[name][out_i, :, :] = arr.astype(np.float32, copy=False)
+    else:
+        with ProcessPoolExecutor(max_workers=n_jobs) as ex:
+            pending = {}
+
+            remaining_iter = iter(remaining)
+            for _ in range(n_jobs):
+                try:
+                    out_i, z = next(remaining_iter)
+                except StopIteration:
+                    break
+                fut, out_i = _submit_one_compact_bscan_future(
+                    ex=ex,
+                    vol=vol,
+                    out_i=out_i,
+                    z=z,
+                    y_min=y_min,
+                    y_max=y_max,
+                    step=step,
+                    families=families,
+                    include_wavelet=include_wavelet,
+                    texture_params=texture_params,
+                    features_to_keep=features_to_keep,
+                    single_bscan_n_jobs=single_bscan_n_jobs,
+                )
+                pending[fut] = out_i
+
+            while pending:
+                done, _ = wait(set(pending.keys()), return_when=FIRST_COMPLETED)
+
+                for fut in done:
+                    out_i = pending.pop(fut)
+                    _, maps, _ = fut.result()
+                    for name, arr in maps.items():
+                        zarr_datasets[name][out_i, :, :] = arr.astype(np.float32, copy=False)
+
+                    try:
+                        next_out_i, next_z = next(remaining_iter)
+                    except StopIteration:
+                        continue
+
+                    next_fut, next_out_i = _submit_one_compact_bscan_future(
+                        ex=ex,
+                        vol=vol,
+                        out_i=next_out_i,
+                        z=next_z,
+                        y_min=y_min,
+                        y_max=y_max,
+                        step=step,
+                        families=families,
+                        include_wavelet=include_wavelet,
+                        texture_params=texture_params,
+                        features_to_keep=features_to_keep,
+                        single_bscan_n_jobs=single_bscan_n_jobs,
+                    )
+                    pending[next_fut] = next_out_i
+
+    zarr.consolidate_metadata(str(out_zarr_path))
+    return Path(out_zarr_path)
+
+
+def instantiate_fullsize_texture_volumes_from_compact_zarr(
+    compact_zarr_path: str | Path,
+    out_zarr_path: str | Path,
+    features_to_keep: tuple[str, ...] | None = None,
+    fill_value: float = np.nan,
+    overwrite: bool = True,
+    chunks: tuple[int, int, int] | None = None,
+) -> Path:
+    """
+    Materialize compact sampled-band texture maps back into full-size (Z, Y, X)
+    feature volumes as a zarr group.
+    """
+    root, manifest = load_compact_texture_zarr(compact_zarr_path)
+
+    volume_shape = tuple(int(v) for v in manifest['volume_shape'])
+    y_min, y_max = [int(v) for v in manifest['crop_y_bounds']]
+    crop_shape = tuple(int(v) for v in manifest['crop_shape'])
+    z_indices = np.asarray(manifest['z_indices'], dtype=int)
+
+    all_features = _compact_zarr_feature_names(root)
+    if features_to_keep is None:
+        features = all_features
+    else:
+        keep = set(features_to_keep)
+        features = [f for f in all_features if f in keep]
+
+    if not features:
+        raise ValueError('No features selected for instantiation')
+
+    sample_meta = DenseMapMeta(
+        row_centers=np.asarray(manifest['row_centers_full'], dtype=int) - y_min,
+        col_centers=np.asarray(manifest['col_centers'], dtype=int),
+        window=int(manifest['window']),
+        step=int(manifest['step']),
+        image_shape=crop_shape,
+    )
+
+    out_root, zarr_datasets = _open_texture_zarr_group(
+        out_zarr_path=out_zarr_path,
+        volume_shape=volume_shape,
+        feature_names=features,
+        chunks=chunks,
+        overwrite=overwrite,
+    )
+    out_root.attrs['source_compact_zarr'] = str(compact_zarr_path)
+
+    for feat in features:
+        ds = root[feat]
+        for local_i, z in enumerate(z_indices):
+            full_slice = np.full(volume_shape[1:], fill_value, dtype=np.float32)
+            full_slice[y_min:y_max, :] = resample_map_to_image(
+                np.asarray(ds[local_i], dtype=np.float32),
+                sample_meta,
+            )
+            zarr_datasets[feat][int(z), :, :] = full_slice
+
+    zarr.consolidate_metadata(str(out_zarr_path))
+    return Path(out_zarr_path)
+
+
+def project_texture_compact_zarr_to_enface_for_volume(
+    vol_path,
+    compact_zarr_path,
+    flat_layers_npz,
+    line_key=None,
+    candidate_slabs=[[5, 15]],
+    features=None,
+    interp_x=True,
+):
+    """
+    Compact-Zarr equivalent of project_texture_compact_npz_to_enface_for_volume(...).
+    """
+    from pathlib import Path
+    import numpy as np
+    from code_files import file_utils
+
+    vol_path = Path(vol_path)
+    root, manifest = load_compact_texture_zarr(compact_zarr_path)
+    flat_layers = np.load(flat_layers_npz)
+
+    if line_key is None:
+        line_key = file_utils.get_algorithm_key_from_filepath(vol_path)
+
+    center = flat_layers[line_key]
+    row_centers_full = np.asarray(manifest['row_centers_full'], dtype=np.int32)
+    col_centers = np.asarray(manifest['col_centers'], dtype=np.int32)
+
+    if features is None:
+        features = _compact_zarr_feature_names(root)
+
+    out = {}
+    for feat in features:
+        proj = CompactTextureSlabProjector(
+            texture_vol=root[feat],
+            row_centers_full=row_centers_full,
+            col_centers=col_centers,
+        )
+        for bottom_offset, top_offset in candidate_slabs:
+            enface = proj.project_between(
+                center - top_offset,
+                center - bottom_offset,
+                interp_x=interp_x,
+                full_x=center.shape[1],
+            )
+            out[f"{feat}|{bottom_offset}->{top_offset}"] = enface
+
+    return out
+
+
 
 def _compact_feature_names(npz_obj) -> list[str]:
     return sorted(k for k in npz_obj.files if k != _COMPACT_TEXTURE_META_KEY)
@@ -943,54 +1334,6 @@ class CompactTextureSlabProjector:
         return out_full
 
 
-def project_texture_compact_npz_to_enface_for_volume(
-    vol_path,
-    compact_npz_path,
-    flat_layers_npz,
-    line_key=None,
-    candidate_slabs=[[5, 15]],
-    features=None,
-    interp_x=True,
-):
-    """
-    Compact-NPZ equivalent of project_texture_zarr_to_enface_for_volume(...).
-    """
-    from pathlib import Path
-    import numpy as np
-    from code_files import file_utils
-
-    vol_path = Path(vol_path)
-    obj, manifest = load_compact_texture_npz(compact_npz_path)
-    flat_layers = np.load(flat_layers_npz)
-
-    if line_key is None:
-        line_key = file_utils.get_algorithm_key_from_filepath(vol_path)
-
-    center = flat_layers[line_key]
-    row_centers_full = np.asarray(manifest['row_centers_full'], dtype=np.int32)
-    col_centers = np.asarray(manifest['col_centers'], dtype=np.int32)
-
-    if features is None:
-        features = _compact_feature_names(obj)
-
-    out = {}
-    for feat in features:
-        proj = CompactTextureSlabProjector(
-            texture_vol=obj[feat],
-            row_centers_full=row_centers_full,
-            col_centers=col_centers,
-        )
-        for bottom_offset, top_offset in candidate_slabs:
-            enface = proj.project_between(
-                center - top_offset,
-                center - bottom_offset,
-                interp_x=interp_x,
-                full_x=center.shape[1],
-            )
-            out[f"{feat}|{bottom_offset}->{top_offset}"] = enface
-
-    return out
-
 def _compute_one_bscan_texture_fullres(
         z: int,
         bscan: np.ndarray,
@@ -1079,26 +1422,34 @@ def _open_texture_zarr_group(
         zdim, ydim, xdim = volume_shape
         chunks = (1, min(256, ydim), min(256, xdim))
 
-    # root = zarr.open_group(str(out_zarr_path), mode='w' if overwrite else 'a')
-    root = zarr.open_group(
-        str(out_zarr_path),
-        mode='w' if overwrite else 'a',
-        zarr_format=2,
-    )
+    try:
+        root = zarr.open_group(
+            str(out_zarr_path),
+            mode='w' if overwrite else 'a',
+            zarr_format=2,
+        )
+    except TypeError:
+        root = zarr.open_group(
+            str(out_zarr_path),
+            mode='w' if overwrite else 'a',
+        )
+
     datasets = {}
     for name in feature_names:
         datasets[name] = root.create_array(
-                name=name,
-                shape=volume_shape,
-                chunks=chunks,
-                dtype=np.float32,
-                compressor=compressor,
-                overwrite=overwrite,
-                fill_value=np.nan,
+            name=name,
+            shape=volume_shape,
+            chunks=chunks,
+            dtype=np.float32,
+            compressor=compressor,
+            overwrite=overwrite,
+            fill_value=np.nan,
         )
+
     root.attrs['volume_shape'] = tuple(int(v) for v in volume_shape)
     root.attrs['chunks'] = tuple(int(v) for v in chunks)
     return root, datasets
+
 
 
 def compute_bscan_texture_volumes_to_zarr(
