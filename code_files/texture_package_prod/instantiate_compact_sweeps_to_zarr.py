@@ -6,6 +6,7 @@ from code_files.texture_package_prod.texture_extraction_utilities import (
     instantiate_fullsize_texture_volumes_from_compact_zarr,
 )
 
+
 def _parse_features_to_keep(text):
     if text is None or str(text).strip() == "":
         return None
@@ -31,16 +32,33 @@ def _find_manifest_paths(root, manifest_filename="texture_runs_manifest.json"):
     return found
 
 
-def _write_zarr_path_sidecars(volume_dir, manifest_rows):
+def _canonical_run_paths(
+    volume_dir,
+    tag,
+    texture_filename="texture_bscan_maps.zarr",
+    compact_filename="texture_bscan_maps_compact.zarr",
+):
+    volume_dir = Path(volume_dir)
+    run_dir = volume_dir / tag
+    compact_zarr_path = run_dir / compact_filename
+    zarr_path = run_dir / texture_filename
+    return run_dir, compact_zarr_path, zarr_path
+
+
+def _write_zarr_path_sidecars(volume_dir, manifest_rows, texture_filename="texture_bscan_maps.zarr"):
+    volume_dir = Path(volume_dir)
+
     with open(volume_dir / "zarr_paths.txt", "w") as f:
         for row in manifest_rows:
-            zarr_path = row.get("zarr_path")
-            if zarr_path is not None:
-                f.write(f"{row['tag']}\t{zarr_path}\n")
+            tag = row["tag"]
+            zarr_path = volume_dir / tag / texture_filename
+            f.write(f"{tag}\t{zarr_path}\n")
 
-    if len(manifest_rows) == 1 and manifest_rows[0].get("zarr_path") is not None:
+    if len(manifest_rows) == 1:
+        only_tag = manifest_rows[0]["tag"]
+        only_path = volume_dir / only_tag / texture_filename
         with open(volume_dir / "zarr_path.txt", "w") as f:
-            f.write(str(manifest_rows[0]["zarr_path"]) + "\n")
+            f.write(str(only_path) + "\n")
 
 
 def instantiate_one_manifest(
@@ -66,21 +84,13 @@ def instantiate_one_manifest(
         if tag is None:
             raise ValueError(f"Manifest row missing 'tag': {row}")
 
-        run_dir = volume_dir / tag
+        run_dir, compact_zarr_path, zarr_path = _canonical_run_paths(
+            volume_dir=volume_dir,
+            tag=tag,
+            texture_filename=texture_filename,
+            compact_filename=compact_filename,
+        )
         run_dir.mkdir(parents=True, exist_ok=True)
-
-        
-        compact_zarr_path = row.get("compact_zarr_path")
-        if compact_zarr_path is None:
-            compact_zarr_path = run_dir / compact_filename
-        else:
-            compact_zarr_path = Path(compact_zarr_path)
-
-        zarr_path = row.get("zarr_path")
-        if zarr_path is None:
-            zarr_path = run_dir / texture_filename
-        else:
-            zarr_path = Path(zarr_path)
 
         if compact_zarr_path.exists():
             if zarr_path.exists() and not overwrite:
@@ -93,6 +103,8 @@ def instantiate_one_manifest(
                     features_to_keep=features_to_keep,
                     overwrite=overwrite,
                 )
+
+            row["compact_zarr_path"] = str(compact_zarr_path)
             row["zarr_path"] = str(zarr_path)
             row["materialized_from_compact_zarr"] = str(compact_zarr_path)
             row["materialized_features_to_keep"] = (
@@ -106,7 +118,6 @@ def instantiate_one_manifest(
             changed = True
 
         else:
-
             raise FileNotFoundError(
                 f"Neither compact zarr nor zarr found for run '{tag}'.\n"
                 f"Looked for:\n"
@@ -122,7 +133,11 @@ def instantiate_one_manifest(
         with open(manifest_path, "w") as f:
             json.dump(manifest, f, indent=2)
 
-        _write_zarr_path_sidecars(volume_dir, manifest)
+        _write_zarr_path_sidecars(
+            volume_dir,
+            manifest,
+            texture_filename=texture_filename,
+        )
         print(f"[updated] {manifest_path}")
 
     return manifest_path
@@ -132,7 +147,7 @@ def main():
     p = argparse.ArgumentParser(
         description=(
             "Instantiate compact texture sweep outputs into per-run zarr folders "
-            "so the existing zarr plotting workflow can be used unchanged."
+            "using the local folder structure as the source of truth."
         )
     )
     p.add_argument(
@@ -194,3 +209,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
