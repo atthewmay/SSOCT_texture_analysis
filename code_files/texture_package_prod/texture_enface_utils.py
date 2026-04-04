@@ -135,7 +135,7 @@ def compute_extra_enface_maps(
     flat_volume,
     flat_layers,
     reference_key="rpe_smooth",
-    slab_offsets=((5, 15),),
+    slab_offsets=((5, 15),(5,30)),
     interp_x=True,
 ):
     """
@@ -210,22 +210,21 @@ def compute_textures_on_enface_maps(
     return out
 
 
-
 class CompactTextureSlabProjector:
     """
-    Project a compact texture volume shaped (Z, R, C) into en-face maps.
+    Compact (Z, R, C) projector.
 
-    Important:
-    - does NOT materialize the full compact volume in RAM
-    - reads one Z-slice at a time from the zarr-backed dataset
-    - projects first on the sampled compact X grid
-    - upsample_x(...) can then expand to full X afterward
+    mean/std:
+        vectorized via prefix sums
+
+    median:
+        exact fallback with loops
     """
     def __init__(
         self,
-        texture_vol,                  # zarr dataset or ndarray, shape (Z, R, C)
-        row_centers_full: np.ndarray, # sampled row centers in full-image Y coords
-        col_centers: np.ndarray,      # sampled col centers in full-image X coords
+        texture_vol,                  # (Z, R, C), ndarray or zarr-backed
+        row_centers_full: np.ndarray,
+        col_centers: np.ndarray,
     ):
         if getattr(texture_vol, "ndim", None) != 3:
             raise ValueError("texture_vol must be (Z, R, C)")
@@ -241,10 +240,7 @@ class CompactTextureSlabProjector:
         if len(self.col_centers) != self.C:
             raise ValueError("col_centers length does not match texture_vol.shape[2]")
 
-    def _sample_bounds(self, upper_bound: np.ndarray, lower_bound: np.ndarray):
-        """
-        Convert full-image bounds (Z, X_full) into compact sampled-row indices (Z, C).
-        """
+    def _sample_bounds(self, upper_bound, lower_bound):
         upper_s = np.asarray(upper_bound, dtype=np.float32)[:, self.col_centers]
         lower_s = np.asarray(lower_bound, dtype=np.float32)[:, self.col_centers]
 
@@ -258,67 +254,87 @@ class CompactTextureSlabProjector:
         stop = np.clip(stop, 0, self.R)
         return start, stop
 
-    @staticmethod
-    def _reduce_cols(arr_z: np.ndarray, start_z: np.ndarray, stop_z: np.ndarray, stat: str):
-        """
-        arr_z: (R, C) for one z-slice
-        start_z, stop_z: (C,) sampled row bounds for this z-slice
-        """
-        out = np.full(arr_z.shape[1], np.nan, dtype=np.float32)
+    def _project_mean_or_std(self, start, stop, stat="mean"):
+        out = np.full((self.Z, self.C), np.nan, dtype=np.float32)
 
-        for c in range(arr_z.shape[1]):
-            lo = int(start_z[c])
-            hi = int(stop_z[c])
-            if hi <= lo:
-                continue
+        c_idx = np.arange(self.C)[None, :]
 
-            vals = arr_z[lo:hi, c]
-            vals = vals[np.isfinite(vals)]
-            if vals.size == 0:
-                continue
+        for z in range(self.Z):
+            arr = np.asarray(self.texture_vol[z], dtype=np.float32)  # (R, C)
 
+            valid = np.isfinite(arr)
+            vals = np.where(valid, arr, 0.0)
+            vals2 = vals * vals
+
+            csum = np.empty((self.R + 1, self.C), dtype=np.float32)
+            csum2 = np.empty((self.R + 1, self.C), dtype=np.float32)
+            ccnt = np.empty((self.R + 1, self.C), dtype=np.int32)
+
+            csum[0] = 0
+            csum2[0] = 0
+            ccnt[0] = 0
+
+            np.cumsum(vals, axis=0, out=csum[1:])
+            np.cumsum(vals2, axis=0, out=csum2[1:])
+            np.cumsum(valid.astype(np.int32), axis=0, out=ccnt[1:])
+
+            s0 = start[z]
+            s1 = stop[z]
+
+            sums = csum[s1, c_idx[0]] - csum[s0, c_idx[0]]
+            cnts = ccnt[s1, c_idx[0]] - ccnt[s0, c_idx[0]]
+
+            good = cnts > 0
             if stat == "mean":
-                out[c] = float(np.nanmean(vals))
-            elif stat == "median":
-                out[c] = float(np.nanmedian(vals))
-            elif stat == "std":
-                out[c] = float(np.nanstd(vals))
+                out[z, good] = sums[good] / cnts[good]
             else:
-                raise ValueError("stat must be 'mean', 'median', or 'std'")
+                sums2 = csum2[s1, c_idx[0]] - csum2[s0, c_idx[0]]
+                mean = np.zeros_like(sums, dtype=np.float32)
+                mean[good] = sums[good] / cnts[good]
+                var = np.zeros_like(sums, dtype=np.float32)
+                var[good] = sums2[good] / cnts[good] - mean[good] ** 2
+                var = np.maximum(var, 0.0)
+                out[z, good] = np.sqrt(var[good])
+
+        return out
+
+    def _project_median(self, start, stop):
+        out = np.full((self.Z, self.C), np.nan, dtype=np.float32)
+
+        for z in range(self.Z):
+            arr = np.asarray(self.texture_vol[z], dtype=np.float32)
+            for c in range(self.C):
+                lo = int(start[z, c])
+                hi = int(stop[z, c])
+                if hi <= lo:
+                    continue
+                vals = arr[lo:hi, c]
+                vals = vals[np.isfinite(vals)]
+                if vals.size == 0:
+                    continue
+                out[z, c] = np.nanmedian(vals)
 
         return out
 
     def project_between(
         self,
-        upper_bound: np.ndarray,   # (Z, X_full)
-        lower_bound: np.ndarray,   # (Z, X_full)
-        stat: str = "mean",
-    ) -> np.ndarray:
-        """
-        Return en-face map on the compact sampled X grid: shape (Z, C).
-        """
+        upper_bound,
+        lower_bound,
+        stat="mean",
+    ):
         start, stop = self._sample_bounds(upper_bound, lower_bound)
 
-        out = np.full((self.Z, self.C), np.nan, dtype=np.float32)
+        if stat == "mean":
+            return self._project_mean_or_std(start, stop, stat="mean")
+        if stat == "std":
+            return self._project_mean_or_std(start, stop, stat="std")
+        if stat == "median":
+            return self._project_median(start, stop)
 
-        for z in range(self.Z):
-            arr_z = np.asarray(self.texture_vol[z], dtype=np.float32)  # (R, C)
-            out[z] = self._reduce_cols(arr_z, start[z], stop[z], stat=stat)
+        raise ValueError("stat must be 'mean', 'median', or 'std'")
 
-        return out
-
-    def upsample_x(
-        self,
-        sampled_map: np.ndarray,   # (Z, C)
-        full_x: int,
-    ) -> np.ndarray:
-        """
-        Upsample sampled compact-X en-face map back to full X.
-        """
+    def upsample_x(self, sampled_map, full_x):
         sampled_map = np.asarray(sampled_map, dtype=np.float32)
-        if sampled_map.shape != (self.Z, self.C):
-            raise ValueError(f"sampled_map must have shape {(self.Z, self.C)}")
-
         out = np.full((self.Z, full_x), np.nan, dtype=np.float32)
 
         for z in range(self.Z):
@@ -334,6 +350,43 @@ class CompactTextureSlabProjector:
 
         return out
 
+from joblib import Parallel, delayed
+
+def _project_one_compact_feature_from_zarr(
+    compact_zarr_path,
+    feat,
+    center,
+    row_centers_full,
+    col_centers,
+    candidate_slabs,
+    stat,
+    upsample,
+):
+    import zarr
+    import numpy as np
+
+    root = zarr.open_group(str(compact_zarr_path), mode="r")
+
+    proj = CompactTextureSlabProjector(
+        texture_vol=root[feat],
+        row_centers_full=row_centers_full,
+        col_centers=col_centers,
+    )
+
+    full_x = center.shape[1]
+    out = {}
+
+    for bottom_offset, top_offset in candidate_slabs:
+        sampled = proj.project_between(
+            upper_bound=center - top_offset,
+            lower_bound=center - bottom_offset,
+            stat=stat,
+        )
+
+        arr = proj.upsample_x(sampled, full_x=full_x) if upsample else sampled
+        out[f"{feat}|{bottom_offset}->{top_offset}|{stat}"] = arr
+
+    return out
 
 def project_texture_compact_zarr_to_enface_for_volume(
     vol_path,
@@ -344,30 +397,23 @@ def project_texture_compact_zarr_to_enface_for_volume(
     features=None,
     stat="mean",
     upsample=True,
+    n_jobs=1,
 ):
-    """
-    Project compact texture B-scan maps into en-face maps for one volume.
-
-    Returns
-    -------
-    dict[str, np.ndarray]
-        keys like:
-            raw__mean|5->15|mean
-        values:
-            (Z, X_full) if upsample=True
-            (Z, C)      if upsample=False
-    """
+    import json
     import zarr
+    import numpy as np
+    from pathlib import Path
+    from joblib import Parallel, delayed
     from code_files import file_utils
 
     vol_path = Path(vol_path)
+    compact_zarr_path = Path(compact_zarr_path)
 
     root = zarr.open_group(str(compact_zarr_path), mode="r")
+
     manifest_json = root.attrs.get("manifest_json", None)
     if manifest_json is None:
         raise ValueError(f"No manifest_json found in {compact_zarr_path}")
-
-    import json
     manifest = json.loads(manifest_json)
 
     flat_layers = np.load(flat_layers_npz)
@@ -382,113 +428,40 @@ def project_texture_compact_zarr_to_enface_for_volume(
     if features is None:
         features = sorted(root.array_keys())
 
-    full_x = center.shape[1]
-    out = {}
-
-    for feat in features:
-        proj = CompactTextureSlabProjector(
-            texture_vol=root[feat],
-            row_centers_full=row_centers_full,
-            col_centers=col_centers,
+    if n_jobs == 1:
+        pieces = [
+            _project_one_compact_feature_from_zarr(
+                compact_zarr_path=compact_zarr_path,
+                feat=feat,
+                center=center,
+                row_centers_full=row_centers_full,
+                col_centers=col_centers,
+                candidate_slabs=candidate_slabs,
+                stat=stat,
+                upsample=upsample,
+            )
+            for feat in features
+        ]
+    else:
+        pieces = Parallel(n_jobs=n_jobs, prefer="processes")(
+            delayed(_project_one_compact_feature_from_zarr)(
+                compact_zarr_path=compact_zarr_path,
+                feat=feat,
+                center=center,
+                row_centers_full=row_centers_full,
+                col_centers=col_centers,
+                candidate_slabs=candidate_slabs,
+                stat=stat,
+                upsample=upsample,
+            )
+            for feat in features
         )
 
-        for bottom_offset, top_offset in candidate_slabs:
-            sampled = proj.project_between(
-                upper_bound=center - top_offset,
-                lower_bound=center - bottom_offset,
-                stat=stat,
-            )
-
-            arr = proj.upsample_x(sampled, full_x=full_x) if upsample else sampled
-            out[f"{feat}|{bottom_offset}->{top_offset}|{stat}"] = arr
-
+    out = {}
+    for d in pieces:
+        out.update(d)
     return out
 
-
-
-# class CompactTextureSlabProjector:
-#     """
-#     Direct slab projection from the compact sampled-band representation.
-#     Avoids materializing full-size dense volumes just to make en-face maps.
-#     """
-#     def __init__(
-#         self,
-#         texture_vol: np.ndarray,          # (Z, R, C)
-#         row_centers_full: np.ndarray,     # full-image Y coords of sampled rows
-#         col_centers: np.ndarray,          # full-image X coords of sampled cols
-#     ):
-#         arr = np.asarray(texture_vol, dtype=np.float32)
-#         if arr.ndim != 3:
-#             raise ValueError('texture_vol must be (Z, R, C)')
-
-#         self.row_centers_full = np.asarray(row_centers_full, dtype=np.int32)
-#         self.col_centers = np.asarray(col_centers, dtype=np.int32)
-
-#         if arr.shape[1] != len(self.row_centers_full):
-#             raise ValueError('row_centers_full length does not match texture_vol.shape[1]')
-#         if arr.shape[2] != len(self.col_centers):
-#             raise ValueError('col_centers length does not match texture_vol.shape[2]')
-
-#         valid = np.isfinite(arr)
-#         vals = np.where(valid, arr, 0.0)
-
-#         self.Z, self.R, self.C = arr.shape
-#         self.csum = np.empty((self.Z, self.R + 1, self.C), dtype=np.float32)
-#         self.ccnt = np.empty((self.Z, self.R + 1, self.C), dtype=np.int32)
-
-#         self.csum[:, 0, :] = 0
-#         self.ccnt[:, 0, :] = 0
-#         np.cumsum(vals, axis=1, out=self.csum[:, 1:, :])
-#         np.cumsum(valid.astype(np.int32), axis=1, out=self.ccnt[:, 1:, :])
-
-#     def project_between(
-#         self,
-#         upper_bound: np.ndarray,   # (Z, X) full-image coords
-#         lower_bound: np.ndarray,   # (Z, X) full-image coords
-#         interp_x: bool = True,
-#         full_x: int | None = None,
-#     ) -> np.ndarray:
-#         upper_s = np.asarray(upper_bound, dtype=np.float32)[:, self.col_centers]
-#         lower_s = np.asarray(lower_bound, dtype=np.float32)[:, self.col_centers]
-
-#         top = np.minimum(upper_s, lower_s)
-#         bottom = np.maximum(upper_s, lower_s)
-
-#         start = np.searchsorted(self.row_centers_full, top, side='left')
-#         stop = np.searchsorted(self.row_centers_full, bottom, side='right')
-
-#         start = np.clip(start, 0, self.R)
-#         stop = np.clip(stop, 0, self.R)
-
-#         z_idx = np.arange(self.Z)[:, None]
-#         c_idx = np.arange(self.C)[None, :]
-
-#         sums = self.csum[z_idx, stop, c_idx] - self.csum[z_idx, start, c_idx]
-#         cnts = self.ccnt[z_idx, stop, c_idx] - self.ccnt[z_idx, start, c_idx]
-
-#         out_sampled = np.full((self.Z, self.C), np.nan, dtype=np.float32)
-#         good = cnts > 0
-#         out_sampled[good] = sums[good] / cnts[good]
-
-#         if not interp_x:
-#             return out_sampled
-
-#         if full_x is None:
-#             full_x = upper_bound.shape[1]
-
-#         out_full = np.full((self.Z, full_x), np.nan, dtype=np.float32)
-#         for z in range(self.Z):
-#             g = np.isfinite(out_sampled[z])
-#             if g.sum() >= 2:
-#                 out_full[z] = np.interp(
-#                     np.arange(full_x),
-#                     self.col_centers[g],
-#                     out_sampled[z, g],
-#                 )
-#             elif g.sum() == 1:
-#                 out_full[z, :] = out_sampled[z, g][0]
-
-#         return out_full
 
 class TextureSlabProjector:
     def __init__(

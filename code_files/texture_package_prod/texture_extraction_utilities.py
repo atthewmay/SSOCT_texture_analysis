@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numcodecs
 import zarr
+import time
 
 # from .vessel_texture_postproc_utils import estimate_shadow_mask_from_bscan, postprocess_feature_dict
 
@@ -139,16 +140,74 @@ def preprocess_texture_image(
 GLCM_FEATURES = ('contrast', 'dissimilarity', 'homogeneity', 'energy', 'correlation', 'ASM')
 
 
-def robust_rescale_uint(image: np.ndarray, levels: int = 32, clip_percentiles: tuple[float, float] = (1, 99)) -> np.ndarray:
-    """Robustly rescale to integer gray levels."""
-    img = image.astype(np.float32)
-    lo, hi = np.nanpercentile(img, clip_percentiles)
+def robust_rescale_uint(
+    image: np.ndarray,
+    levels: int = 32,
+    clip_percentiles: tuple[float, float] = (1, 99),
+    clip_values: tuple[float, float] | None = None,
+) -> np.ndarray:
+    """
+    Rescale to integer gray levels.
+    If clip_values is provided, use those fixed (lo, hi) values instead of
+    recomputing percentiles on this image.
+    """
+    img = image.astype(np.float32, copy=False)
+
+    if clip_values is None:
+        lo, hi = np.nanpercentile(img, clip_percentiles)
+    else:
+        lo, hi = clip_values
+
     img = np.clip(img, lo, hi)
     if hi <= lo:
         return np.zeros_like(img, dtype=np.uint8)
+
     img = (img - lo) / (hi - lo)
     return np.clip(np.round(img * (levels - 1)), 0, levels - 1).astype(np.uint8)
 
+
+
+def compute_volume_level_band_clip_values(
+    volume,
+    y_min: int,
+    y_max: int,
+    texture_params: TextureSweepParams,
+    include_wavelet: bool,
+    clip_percentiles: tuple[float, float] = (1, 99),
+    sample_z_step: int = 2,
+    sample_xy_step: int = 2,
+) -> dict[str, tuple[float, float]]:
+    """
+    Compute one robust (lo, hi) pair per band for the whole volume.
+
+    Uses a subsample for memory safety. This is still volume-level, just not
+    every pixel. Set sample_z_step=1 and sample_xy_step=1 if you want exact.
+    """
+    texture_params = texture_params.concrete()
+    z_idx = np.arange(0, volume.shape[0], sample_z_step, dtype=int)
+
+    band_samples: dict[str, list[np.ndarray]] = {}
+
+    for z in z_idx:
+        crop = np.asarray(volume[z, y_min:y_max, :], dtype=np.float32)
+        crop = preprocess_texture_image(crop, texture_params)
+
+        bands = haar_like_bands(crop) if include_wavelet else {'raw': crop}
+
+        for band_name, arr in bands.items():
+            samp = np.asarray(arr[::sample_xy_step, ::sample_xy_step], dtype=np.float32).ravel()
+            samp = samp[np.isfinite(samp)]
+            if samp.size == 0:
+                continue
+            band_samples.setdefault(band_name, []).append(samp)
+
+    out = {}
+    for band_name, pieces in band_samples.items():
+        vals = np.concatenate(pieces)
+        lo, hi = np.nanpercentile(vals, clip_percentiles)
+        out[band_name] = (float(lo), float(hi))
+
+    return out
 
 # ---------- small patch features ----------
 
@@ -447,7 +506,6 @@ def _row_worker(
         row_results.append((c, feats))
     return row_results
 
-
 def compute_dense_texture_maps(
     image: np.ndarray,
     window: int = 31,
@@ -455,9 +513,10 @@ def compute_dense_texture_maps(
     mask: np.ndarray | None = None,
     families: tuple[str, ...] = ('firstorder', 'glcm', 'glrlm', 'glszm', 'gldm', 'ngtdm', 'lbp', 'gradient'),
     include_wavelet: bool = True,
-    levels: int = 32,
+    levels: int = 16,
     min_valid_frac: float = 0.5,
     n_jobs: int = 1,
+    band_clip_values: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[dict[str, np.ndarray], DenseMapMeta]:
     """
     Generic dense texture engine.
@@ -471,7 +530,14 @@ def compute_dense_texture_maps(
         raise ValueError('window must be odd')
 
     bands = haar_like_bands(img) if include_wavelet else {'raw': img}
-    quantized = {name: robust_rescale_uint(arr, levels=levels) for name, arr in bands.items()}
+    quantized = {
+        name: robust_rescale_uint(
+            arr,
+            levels=levels,
+            clip_values=None if band_clip_values is None else band_clip_values.get(name),
+        )
+        for name, arr in bands.items()
+    }
 
     rad = window // 2
     rows = np.arange(rad, img.shape[0] - rad, step)
@@ -602,6 +668,8 @@ def _submit_one_compact_bscan_future(
     texture_params: TextureSweepParams,
     features_to_keep: tuple[str, ...] | None,
     single_bscan_n_jobs: int,
+    band_clip_values: dict[str, tuple[float, float]] | None = None,
+
 ):
     return ex.submit(
         _compute_one_bscan_texture_compact,
@@ -615,6 +683,7 @@ def _submit_one_compact_bscan_future(
         texture_params=texture_params,
         features_to_keep=features_to_keep,
         n_jobs=single_bscan_n_jobs,
+        band_clip_values = band_clip_values
     ), out_i
 
 
@@ -666,6 +735,19 @@ def compute_bscan_texture_volumes_to_compact_zarr(
         window=int(texture_params.window),
     )
 
+    t1 = time.time()
+    print(f"computing global intensity info for glcm binning")
+    band_clip_values = compute_volume_level_band_clip_values(
+        volume=vol,
+        y_min=y_min,
+        y_max=y_max,
+        texture_params=texture_params,
+        include_wavelet=include_wavelet,
+        clip_percentiles=(1, 99),
+    )
+    t2 = time.time()
+    print(f"done in {t2-t1} seconds")
+
     z0 = int(z_idx[0])
     _, first_maps, first_meta = _compute_one_bscan_texture_compact(
         z=z0,
@@ -678,6 +760,7 @@ def compute_bscan_texture_volumes_to_compact_zarr(
         texture_params=texture_params,
         features_to_keep=features_to_keep,
         n_jobs=single_bscan_n_jobs,
+        band_clip_values=band_clip_values,
     )
 
     feature_names = sorted(first_maps)
@@ -713,6 +796,13 @@ def compute_bscan_texture_volumes_to_compact_zarr(
         levels=int(texture_params.levels),
         gaussian_sigma=float(texture_params.gaussian_sigma),
         downsample_factor=int(texture_params.downsample_factor),
+        band_clip_values={
+                k: [float(v[0]), float(v[1])]
+                for k, v in band_clip_values.items()
+        },
+
+
+
     )
 
     root.attrs['manifest_json'] = json.dumps(manifest)
@@ -723,6 +813,9 @@ def compute_bscan_texture_volumes_to_compact_zarr(
     root.attrs['include_wavelet'] = bool(include_wavelet)
     root.attrs['families'] = list(families)
     root.attrs['features_to_keep'] = None if features_to_keep is None else list(features_to_keep)
+    root.attrs['band_clip_values_json'] = json.dumps(
+        {k: [float(v[0]), float(v[1])] for k, v in band_clip_values.items()}
+    )
 
     for name, arr in first_maps.items():
         zarr_datasets[name][0, :, :] = arr.astype(np.float32, copy=False)
@@ -732,7 +825,7 @@ def compute_bscan_texture_volumes_to_compact_zarr(
     if n_jobs == 1:
         for out_i, z in remaining:
             _, maps, _ = _compute_one_bscan_texture_compact(
-                z=z,
+                z=z0,
                 bscan=np.asarray(vol[z], dtype=np.float32),
                 y_min=y_min,
                 y_max=y_max,
@@ -742,7 +835,10 @@ def compute_bscan_texture_volumes_to_compact_zarr(
                 texture_params=texture_params,
                 features_to_keep=features_to_keep,
                 n_jobs=single_bscan_n_jobs,
+                band_clip_values=band_clip_values,
             )
+
+
             for name, arr in maps.items():
                 zarr_datasets[name][out_i, :, :] = arr.astype(np.float32, copy=False)
     else:
@@ -768,6 +864,7 @@ def compute_bscan_texture_volumes_to_compact_zarr(
                     texture_params=texture_params,
                     features_to_keep=features_to_keep,
                     single_bscan_n_jobs=single_bscan_n_jobs,
+                    band_clip_values=band_clip_values,
                 )
                 pending[fut] = out_i
 
@@ -961,14 +1058,13 @@ def _compute_one_bscan_texture_compact(
     bscan: np.ndarray,
     y_min: int,
     y_max: int,
-    # window: int,
     step: int,
     families: tuple[str, ...],
     include_wavelet: bool,
-    # levels: int,
     texture_params: TextureSweepParams,
     features_to_keep: tuple[str, ...] | None = None,
     n_jobs: int = 1,
+    band_clip_values: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[int, dict[str, np.ndarray], DenseMapMeta]:
     """
     Compute sampled-grid feature maps on one fixed crop band.
@@ -987,6 +1083,7 @@ def _compute_one_bscan_texture_compact(
         include_wavelet=include_wavelet,
         levels=int(texture_params.levels),
         n_jobs=n_jobs,
+        band_clip_values=band_clip_values,
     )
 
     if features_to_keep is not None:
@@ -1261,6 +1358,7 @@ def _compute_one_bscan_texture_fullres(
 
     I think really to get the best texture features we should pre-flatten (like for the horizontal and diagnoal runs, the horizontal structures will come out much better)
     """
+    raise Exception( " i didn't think we used this fn anynore")
     texture_params = texture_params.concrete()
     y_min = int(np.floor(np.minimum(upper, lower).min() - pad - texture_params.window))
     y_max = int(np.ceil(np.maximum(upper, lower).max() + pad + texture_params.window))
@@ -1348,7 +1446,7 @@ def _open_texture_zarr_group(
         if hasattr(root, "create_array"):
             datasets[name] = root.create_array(
                 name=name,
-                # shape=shape,
+                shape=volume_shape, # This might cause fail
                 chunks=chunks,
                 dtype=np.float32,
                 compressor=compressor,
@@ -1359,6 +1457,7 @@ def _open_texture_zarr_group(
             datasets[name] = root.create_dataset(
                 name=name,
                 # shape=shape,
+                shape=volume_shape, # This might cause fail
                 chunks=chunks,
                 dtype=np.float32,
                 compressor=compressor,
