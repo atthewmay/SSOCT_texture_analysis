@@ -9,6 +9,7 @@ import numpy as np
 import code_files.file_utils as fu
 from code_files.texture_package_prod.texture_extraction_utilities import (
     compute_dense_texture_maps,
+    resample_map_to_image,
 )
 
 from pathlib import Path
@@ -199,7 +200,7 @@ def compute_textures_on_enface_maps(
         arr = np.asarray(arr, dtype=np.float32)
         mask = np.isfinite(arr)
 
-        feat_maps, _ = compute_dense_texture_maps(
+        feat_maps, meta = compute_dense_texture_maps(
             image=arr,
             window=window,
             step=step,
@@ -211,8 +212,15 @@ def compute_textures_on_enface_maps(
             n_jobs=n_jobs,
         )
 
+        if step != 1:
+            feat_maps = {
+                feat_name: resample_map_to_image(feat_map, meta)
+                for feat_name, feat_map in feat_maps.items()
+            }
+
         for feat_name, feat_map in feat_maps.items():
-            out[f"{map_name}__{feat_name}"] = feat_map
+            out[f"{map_name}__{feat_name}"] = np.asarray(feat_map, dtype=np.float32)
+
 
     return out
 

@@ -9,6 +9,7 @@ import pandas as pd
 from matplotlib.patches import Circle
 from scipy import ndimage
 from skimage.transform import AffineTransform, warp
+from matplotlib.backends.backend_pdf import PdfPages
 from code_files.texture_package_prod.texture_enface_utils import (
     make_enface_isotropic_x
 )
@@ -246,13 +247,42 @@ def add_sectorized_ring_masks(
             out[f"{ring_name}_{sec_name}"] = masks[ring_name] & sec_mask
     return out
     
-def ordered_region_names(extra_ring_names: list[str]) -> list[str]:
-    names = ["center"]
-    base_rings = ["inner_ring", "outer_ring", *extra_ring_names]
-    for ring_name in base_rings:
-        for sec in ("superior", "nasal", "inferior", "temporal"):
-            names.append(f"{ring_name}_{sec}")
-    return names
+# def ordered_region_names(extra_ring_names: list[str]) -> list[str]:
+#     names = ["center"]
+#     base_rings = ["inner_ring", "outer_ring", *extra_ring_names]
+#     for ring_name in base_rings:
+#         for sec in ("superior", "nasal", "inferior", "temporal"):
+#             names.append(f"{ring_name}_{sec}")
+#     return names
+
+def ordered_region_names(masks: dict[str, np.ndarray]) -> list[str]:
+    out = ["center"]
+
+    for ring_name in ("inner", "outer"):
+        for sec in ("temporal", "superior", "nasal", "inferior"):
+            key = f"{ring_name}_{sec}"
+            if key in masks:
+                out.append(key)
+
+    extra_ids = sorted(
+        int(k.split("_")[2])
+        for k in masks
+        if k.startswith("extra_ring_") and k.count("_") == 2
+    )
+    for i in extra_ids:
+        for sec in ("temporal", "superior", "nasal", "inferior"):
+            key = f"extra_ring_{i}_{sec}"
+            if key in masks:
+                out.append(key)
+
+    for sec in ("temporal", "superior", "nasal", "inferior"):
+        key = f"outer_region_{sec}"
+        if key in masks:
+            out.append(key)
+
+    if "whole" in masks:
+        out.append("whole")
+    return out
 
 def build_region_value_map(
     masks: dict[str, np.ndarray],
@@ -261,13 +291,17 @@ def build_region_value_map(
 ) -> np.ndarray:
     shape = next(iter(masks.values())).shape
     out = np.full(shape, np.nan, dtype=np.float32)
-    for name in ordered_region_names(extra_ring_names):
+
+    for name in ordered_region_names(masks):
+        if name == "whole":
+            continue
         mask = masks.get(name)
         if mask is None:
             continue
         val = region_means.get(name, np.nan)
         if np.isfinite(val):
             out[mask] = float(val)
+
     return out
 
 def mask_centroid_xy(mask: np.ndarray) -> tuple[float, float] | None:
@@ -328,7 +362,47 @@ def draw_etdrs_overlay(
         ax.set_title(title, fontsize=9)
     ax.axis("off")
 
-def save_overlay_mosaic(
+# def save_overlay_mosaic(
+#     out_path: Path,
+#     case_id: str,
+#     transformed_maps: dict[str, np.ndarray],
+#     show_features: list[str],
+#     fovea_xy: tuple[float, float],
+#     radii: tuple[float, float, float],
+#     extra_radii: tuple[float, ...],
+#     exclusion_mask: np.ndarray,
+# ):
+#     names = [f for f in show_features if f in transformed_maps]
+#     if not names:
+#         names = list(transformed_maps)[:6]
+#     n = len(names)
+#     ncols = min(3, n)
+#     nrows = int(np.ceil(n / ncols))
+#     fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 4.2 * nrows), dpi=180)
+#     axes = np.atleast_1d(axes).ravel()
+#     for ax, name in zip(axes, names):
+#         draw_etdrs_overlay(
+#             ax,
+#             transformed_maps[name],
+#             fovea_xy=fovea_xy,
+#             radii=radii,
+#             extra_radii=extra_radii,
+#             exclusion_mask=exclusion_mask,
+#             title=name,
+#         )
+#     for ax in axes[n:]:
+#         ax.axis("off")
+#     fig.suptitle(case_id, fontsize=11)
+#     fig.tight_layout()
+#     fig.savefig(out_path, bbox_inches="tight")
+#     plt.close(fig)
+
+def _chunk_list(items, chunk_size: int):
+    items = list(items)
+    for start in range(0, len(items), chunk_size):
+        yield items[start:start + chunk_size]
+
+def save_overlay_mosaic_pdf(
     out_path: Path,
     case_id: str,
     transformed_maps: dict[str, np.ndarray],
@@ -337,31 +411,48 @@ def save_overlay_mosaic(
     radii: tuple[float, float, float],
     extra_radii: tuple[float, ...],
     exclusion_mask: np.ndarray,
+    max_panels_per_page: int = 60,
+    ncols: int = 3,
 ):
     names = [f for f in show_features if f in transformed_maps]
     if not names:
         names = list(transformed_maps)[:6]
-    n = len(names)
-    ncols = min(3, n)
-    nrows = int(np.ceil(n / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4.2 * ncols, 4.2 * nrows), dpi=180)
-    axes = np.atleast_1d(axes).ravel()
-    for ax, name in zip(axes, names):
-        draw_etdrs_overlay(
-            ax,
-            transformed_maps[name],
-            fovea_xy=fovea_xy,
-            radii=radii,
-            extra_radii=extra_radii,
-            exclusion_mask=exclusion_mask,
-            title=name,
-        )
-    for ax in axes[n:]:
-        ax.axis("off")
-    fig.suptitle(case_id, fontsize=11)
-    fig.tight_layout()
-    fig.savefig(out_path, bbox_inches="tight")
-    plt.close(fig)
+
+    n_pages = int(np.ceil(len(names) / max_panels_per_page))
+
+    with PdfPages(out_path) as pdf:
+        for page_idx, page_names in enumerate(_chunk_list(names, max_panels_per_page), start=1):
+            n = len(page_names)
+            this_ncols = min(ncols, n)
+            nrows = int(np.ceil(n / this_ncols))
+
+            fig, axes = plt.subplots(
+                nrows,
+                this_ncols,
+                figsize=(4.2 * this_ncols, 4.2 * nrows),
+                dpi=180,
+            )
+            axes = np.atleast_1d(axes).ravel()
+
+            for ax, name in zip(axes, page_names):
+                draw_etdrs_overlay(
+                    ax,
+                    transformed_maps[name],
+                    fovea_xy=fovea_xy,
+                    radii=radii,
+                    extra_radii=extra_radii,
+                    exclusion_mask=exclusion_mask,
+                    title=name,
+                )
+
+            for ax in axes[n:]:
+                ax.axis("off")
+
+            fig.suptitle(f"{case_id} | overlay page {page_idx}/{n_pages}", fontsize=11)
+            fig.tight_layout()
+            pdf.savefig(fig, bbox_inches="tight")
+            plt.close(fig)
+
 
 def plot_region_mean_heatmap(
     ax,
@@ -399,22 +490,22 @@ def plot_region_mean_heatmap(
         rgba[edge, :3] = 1.0
         rgba[edge, 3] = 0.85
         ax.imshow(rgba)
-    label_names = ordered_region_names(extra_ring_names)
-    for name in label_names:
-        if name not in masks:
-            continue
-        ctr = mask_centroid_xy(masks[name])
-        if ctr is None:
-            continue
-        x, y = ctr
-        val = region_means.get(name, np.nan)
-        short = name.replace("_ring", "").replace("extra_", "x")
-        txt = f"{short}\\n{val:.2f}" if np.isfinite(val) else short
-        ax.text(
-            x, y, txt,
-            color="white", fontsize=5.5, ha="center", va="center",
-            bbox=dict(boxstyle="round,pad=0.12", fc=(0, 0, 0, 0.35), ec="none"),
-        )
+    label_names = [name for name in ordered_region_names(masks) if name != "whole"]
+    # for name in label_names:
+        # if name not in masks:
+        #     continue
+        # # ctr = mask_centroid_xy(masks[name])
+        # if ctr is None:
+        #     continue
+        # x, y = ctr
+        # val = region_means.get(name, np.nan)
+        # short = name.replace("_ring", "").replace("extra_", "x")
+        # txt = f"{short}\\n{val:.2f}" if np.isfinite(val) else short
+        # ax.text(
+        #     x, y, txt,
+        #     color="white", fontsize=5.5, ha="center", va="center",
+        #     bbox=dict(boxstyle="round,pad=0.12", fc=(0, 0, 0, 0.35), ec="none"),
+        # )
     if exclusion_mask is not None and exclusion_mask.any():
         rgba = np.zeros((*exclusion_mask.shape, 4), dtype=np.float32)
         rgba[..., 0] = 1.0
@@ -435,9 +526,11 @@ def save_summary_plots(
     extra_ring_names: list[str],
     exclusion_mask: np.ndarray,
 ):
-    ring_order = ["center", "inner_ring", "outer_ring", *extra_ring_names, "whole"]
+    # ring_order = ["center", "inner_ring", "outer_ring", *extra_ring_names, "whole"]
+    ring_order = ["center", "inner_ring", "outer_ring", *extra_ring_names, "outer_region", "whole"]
     ring_vals = [region_means.get(k, np.nan) for k in ring_order]
-    row_names = ["inner_ring", "outer_ring", *extra_ring_names]
+    # row_names = ["inner_ring", "outer_ring", *extra_ring_names]
+    row_names = ["inner_ring", "outer_ring", *extra_ring_names, "outer_region"]
     col_names = ["superior", "nasal", "inferior", "temporal"]
     heat = np.full((len(row_names), len(col_names)), np.nan, dtype=np.float32)
     for i, ring_name in enumerate(row_names):
@@ -451,7 +544,7 @@ def save_summary_plots(
             vmax = vmin + 1e-6
     else:
         vmin, vmax = 0.0, 1.0
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4.8), dpi=180)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), dpi=180)
     im0 = plot_region_mean_heatmap(
         axes[0],
         feature_image=feature_image,
@@ -465,23 +558,23 @@ def save_summary_plots(
         vmax=vmax,
     )
     fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
-    im1 = axes[1].imshow(heat, aspect="auto", cmap="viridis", vmin=vmin, vmax=vmax)
-    axes[1].set_xticks(np.arange(len(col_names)))
-    axes[1].set_xticklabels(col_names)
-    axes[1].set_yticks(np.arange(len(row_names)))
-    axes[1].set_yticklabels(row_names)
-    axes[1].set_title(f"{feature_name}: ring × quadrant matrix")
-    for i in range(len(row_names)):
-        for j in range(len(col_names)):
-            val = heat[i, j]
-            if np.isfinite(val):
-                axes[1].text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=7, color="white")
-    fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
-    axes[2].bar(np.arange(len(ring_order)), ring_vals)
-    axes[2].set_xticks(np.arange(len(ring_order)))
-    axes[2].set_xticklabels(ring_order, rotation=45, ha="right")
-    axes[2].set_title(f"{feature_name}: whole-ring means")
-    axes[2].set_ylabel("mean")
+    # im1 = axes[1].imshow(heat, aspect="auto", cmap="viridis", vmin=vmin, vmax=vmax)
+    # axes[1].set_xticks(np.arange(len(col_names)))
+    # axes[1].set_xticklabels(col_names)
+    # axes[1].set_yticks(np.arange(len(row_names)))
+    # axes[1].set_yticklabels(row_names)
+    # axes[1].set_title(f"{feature_name}: ring × quadrant matrix")
+    # for i in range(len(row_names)):
+    #     for j in range(len(col_names)):
+    #         val = heat[i, j]
+    #         if np.isfinite(val):
+    #             axes[1].text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=7, color="white")
+    # fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+    axes[1].bar(np.arange(len(ring_order)), ring_vals)
+    axes[1].set_xticks(np.arange(len(ring_order)))
+    axes[1].set_xticklabels(ring_order, rotation=45, ha="right")
+    axes[1].set_title(f"{feature_name}: whole-ring means")
+    axes[1].set_ylabel("mean")
     fig.suptitle(case_id)
     fig.tight_layout()
     fig.savefig(out_dir / f"{case_id}__{feature_name}__summary.png", bbox_inches="tight")
@@ -499,6 +592,7 @@ def process_case(
     radii: tuple[float, float, float],
     extra_radii: tuple[float, ...],
     show_features: list[str],
+    max_panels_per_page: int = 60,
 ):
     maps = load_enface_maps(enface_path)
     first_map = next(iter(maps.values()))
@@ -560,8 +654,9 @@ def process_case(
     # Save overlay mosaic.
     overlay_dir = out_dir / "overlays"
     overlay_dir.mkdir(parents=True, exist_ok=True)
-    save_overlay_mosaic(
-        overlay_dir / f"{case_id}__overlay.png",
+    
+    save_overlay_mosaic_pdf(
+        overlay_dir / f"{case_id}__overlay.pdf",
         case_id=case_id,
         transformed_maps=transformed_maps,
         show_features=show_features,
@@ -569,6 +664,7 @@ def process_case(
         radii=radii,
         extra_radii=extra_radii,
         exclusion_mask=exclusion_std,
+        max_panels_per_page=max_panels_per_page,
     )
     # Summaries.
     rows = []
@@ -608,6 +704,11 @@ def main():
     ap.add_argument("--onh-label", type=int, default=1)
     ap.add_argument("--fovea-label", type=int, default=2)
     ap.add_argument(
+        "--max-panels-per-page",
+        type=int,
+        default=60,
+    )
+    ap.add_argument(
         "--radii",
         type=float,
         nargs=3,
@@ -633,7 +734,7 @@ def main():
     all_df = []
     for case_id, enface_path in cases:
         maps = load_enface_maps(enface_path)
-        show_features = args.show_features or list(maps)[:6]
+        show_features = args.show_features or list(maps)
         df = process_case(
             case_id=case_id,
             enface_path=enface_path,
@@ -644,6 +745,8 @@ def main():
             radii=tuple(args.radii),
             extra_radii=tuple(args.extra_radii),
             show_features=show_features,
+            max_panels_per_page=args.max_panels_per_page,
+
         )
         all_df.append(df)
     summary_long = pd.concat(all_df, ignore_index=True)
