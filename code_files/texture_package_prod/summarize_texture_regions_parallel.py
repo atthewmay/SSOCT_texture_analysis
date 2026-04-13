@@ -500,6 +500,145 @@ def save_summary_plots(
 # ---------------------------------------------------------------------
 # Main workflow
 # ---------------------------------------------------------------------
+def split_pair_id_and_eye(case_id: str) -> tuple[str, str]:
+    m = re.search(r"(?:^|[_-])(OD|OS)(?:[_.-]|$)", case_id.upper())
+    if not m:
+        raise ValueError(f"Could not find OD or OS in case_id: {case_id}")
+
+    eye = m.group(1)
+
+    pair_id = re.sub(
+        r"(?:^|[_-])(OD|OS)(?=[_.-]|$)",
+        "",
+        case_id,
+        flags=re.I,
+    )
+    pair_id = re.sub(r"[_-]{2,}", "_", pair_id).strip("_-.")
+
+    return pair_id, eye
+
+
+def _burden_region_lists(regions: list[str]) -> tuple[list[str], list[str]]:
+    coarse = []
+    fine = []
+
+    for region in regions:
+        if region == "whole":
+            continue
+
+        if region == "center":
+            coarse.append(region)
+            fine.append(region)
+            continue
+
+        if region in {"inner_ring", "outer_ring", "outer_region"}:
+            coarse.append(region)
+            continue
+
+        if re.fullmatch(r"extra_ring_\d+", region):
+            coarse.append(region)
+            continue
+
+        if re.fullmatch(r"(inner|outer|outer_region)_(temporal|superior|nasal|inferior)", region):
+            fine.append(region)
+            continue
+
+        if re.fullmatch(r"extra_ring_\d+_(temporal|superior|nasal|inferior)", region):
+            fine.append(region)
+            continue
+
+    return coarse, fine
+
+
+def _d_mean_and_rms(left_vals, right_vals) -> tuple[float, float]:
+    left = np.asarray(left_vals, dtype=np.float32)
+    right = np.asarray(right_vals, dtype=np.float32)
+
+    good = np.isfinite(left) & np.isfinite(right)
+    if not np.any(good):
+        return np.nan, np.nan
+
+    d = np.abs(left[good] - right[good])
+    return float(np.mean(d)), float(np.sqrt(np.mean(d ** 2)))
+
+
+def add_intereye_burden_rows(summary_long: pd.DataFrame) -> pd.DataFrame:
+    need = {"case_id", "feature", "region", "stat", "value"}
+    missing = need - set(summary_long.columns)
+    if missing:
+        raise ValueError(f"summary_long missing columns: {sorted(missing)}")
+
+    base = summary_long.loc[summary_long["stat"] == "mean"].copy()
+
+    case_meta = base[["case_id"]].drop_duplicates().copy()
+    case_meta[["pair_id", "eye"]] = case_meta["case_id"].apply(
+        lambda s: pd.Series(split_pair_id_and_eye(s))
+    )
+
+    base = base.merge(case_meta, on="case_id", how="left")
+
+    new_rows = []
+
+    for pair_id, pair_df in base.groupby("pair_id", sort=False):
+        eyes = pair_df[["case_id", "eye"]].drop_duplicates()
+
+        if set(eyes["eye"]) != {"OD", "OS"}:
+            continue
+        if (eyes["eye"] == "OD").sum() != 1 or (eyes["eye"] == "OS").sum() != 1:
+            continue
+
+        od_case = eyes.loc[eyes["eye"] == "OD", "case_id"].iloc[0]
+        os_case = eyes.loc[eyes["eye"] == "OS", "case_id"].iloc[0]
+
+        for feature, feat_df in pair_df.groupby("feature", sort=False):
+            mat = feat_df.pivot_table(
+                index="eye",
+                columns="region",
+                values="value",
+                aggfunc="first",
+            )
+
+            if "OD" not in mat.index or "OS" not in mat.index:
+                continue
+
+            coarse_regions, fine_regions = _burden_region_lists(list(mat.columns))
+
+            for region_group_name, region_list in (
+                ("intereye_coarse", coarse_regions),
+                ("intereye_fine", fine_regions),
+            ):
+                if not region_list:
+                    continue
+
+                d_mean, d_rms = _d_mean_and_rms(
+                    mat.loc["OD", region_list].to_numpy(),
+                    mat.loc["OS", region_list].to_numpy(),
+                )
+
+                for case_id in (od_case, os_case):
+                    new_rows.append(
+                        {
+                            "case_id": case_id,
+                            "feature": feature,
+                            "region": region_group_name,
+                            "stat": "D_mean",
+                            "value": d_mean,
+                        }
+                    )
+                    new_rows.append(
+                        {
+                            "case_id": case_id,
+                            "feature": feature,
+                            "region": region_group_name,
+                            "stat": "D_rms",
+                            "value": d_rms,
+                        }
+                    )
+
+    if not new_rows:
+        return summary_long
+
+    return pd.concat([summary_long, pd.DataFrame(new_rows)], ignore_index=True)
 
 def process_case(
     case_id: str,
@@ -730,6 +869,7 @@ def main() -> None:
         raise RuntimeError("No cases completed successfully")
 
     summary_long = pd.concat(all_df, ignore_index=True)
+    summary_long = add_intereye_burden_rows(summary_long) # this is where we will rerun
     summary_long.to_csv(args.outdir / "texture_region_summary_long.csv", index=False)
 
     summary_wide = summary_long.pivot_table(

@@ -731,6 +731,9 @@ def main():
         default=None,
         help="Feature names to overlay / plot. Default: first six found.",
     )
+    ap.add_argument("--save_mosaic", action="store_true")
+    ap.add_argument("--save_summaries", action="store_true")
+
     args = ap.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
     cases = discover_cases(args.enface_root, args.glob)
@@ -749,6 +752,8 @@ def main():
             extra_radii=tuple(args.extra_radii),
             show_features=show_features,
             max_panels_per_page=args.max_panels_per_page,
+            save_mosaic=args.save_mosaic,
+            save_summaries=args.save_summaries,
 
         )
         all_df.append(df)
