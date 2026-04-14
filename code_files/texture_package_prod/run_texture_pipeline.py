@@ -14,19 +14,15 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 # from texture_package_prod.fundus_preprocessing_utils import preprocess_fundus_for_texture
 from code_files.texture_package_prod.texture_enface_utils import retinal_thickness_map
 from texture_package_prod.simulation_utils import simulate_oct_volume
-from texture_package_prod.texture_io import load_image,  load_layers_npz, load_ss_volume # load_landmark_dict,
+from texture_package_prod.texture_io import load_layers_npz # load_landmark_dict,
 from texture_package_prod.texture_plotting_utils import plot_regions_overlay, plot_feature_mosaic
-from texture_package_prod.texture_regions import make_etdrs_grid_plus_rings, summarize_by_regions
+from texture_package_prod.texture_regions import summarize_by_regions
 
 from texture_package_prod.texture_extraction_utilities import (
     GLCMParams,
     TextureSweepParams,
-    compute_dense_texture_maps,
     resample_map_to_image,
-    compute_bscan_texture_volumes_to_zarr,
     compute_bscan_texture_volumes_to_compact_zarr,
-    instantiate_fullsize_texture_volumes_from_compact_zarr,
-    project_texture_compact_zarr_to_enface_for_volume,
 )
 
 # from texture_package_prod.vessel_texture_postproc_utils import estimate_vessel_mask_from_enface, postprocess_feature_dict
