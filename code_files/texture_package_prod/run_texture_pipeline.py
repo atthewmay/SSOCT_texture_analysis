@@ -17,21 +17,11 @@ from texture_package_prod.simulation_utils import simulate_oct_volume
 from texture_package_prod.texture_io import load_image,  load_layers_npz, load_ss_volume # load_landmark_dict,
 from texture_package_prod.texture_plotting_utils import plot_regions_overlay, plot_feature_mosaic
 from texture_package_prod.texture_regions import make_etdrs_grid_plus_rings, summarize_by_regions
-# from texture_package_prod.texture_extraction_utilities import (
-#     TextureSweepParams,
-#     compute_dense_texture_maps,
-#     project_bscan_texture_to_enface,
-#     resample_map_to_image,
-#     compute_bscan_texture_volumes_to_zarr,
-#     retinal_thickness_map,
-#     # save_enface_feature_maps_to_zarr,
-# )
 
 from texture_package_prod.texture_extraction_utilities import (
     GLCMParams,
     TextureSweepParams,
     compute_dense_texture_maps,
-    project_bscan_texture_to_enface,
     resample_map_to_image,
     compute_bscan_texture_volumes_to_zarr,
     compute_bscan_texture_volumes_to_compact_zarr,
@@ -132,37 +122,37 @@ def _parse_features_to_keep(text: str | None):
         return None
     return tuple(x.strip() for x in text.split(",") if x.strip())
 
-def run_oct(args):
-    if args.demo_oct:
-        volume, upper, lower, _ = simulate_oct_volume(
-            z=args.demo_z, height=args.demo_h, width=args.demo_w, seed=args.seed, eye=args.demo_eye, pattern=args.demo_pattern
-        )
-    else:
-        volume = load_ss_volume(args.input, mmap=True, z_step=args.z_step)
-        upper, lower = _load_bounds(args)
-        if args.z_step > 1:
-            upper = upper[::args.z_step]
-            lower = lower[::args.z_step]
+# def run_oct(args):
+#     if args.demo_oct:
+#         volume, upper, lower, _ = simulate_oct_volume(
+#             z=args.demo_z, height=args.demo_h, width=args.demo_w, seed=args.seed, eye=args.demo_eye, pattern=args.demo_pattern
+#         )
+#     else:
+#         volume = load_ss_volume(args.input, mmap=True, z_step=args.z_step)
+#         upper, lower = _load_bounds(args)
+#         if args.z_step > 1:
+#             upper = upper[::args.z_step]
+#             lower = lower[::args.z_step]
 
 
-    maps = project_bscan_texture_to_enface(
-        volume,
-        upper_bound=upper,
-        lower_bound=lower,
-        z_step=1,
-        window=args.window, #Will fail
-        step=args.step,
-        pad=args.pad,
-        families=DEFAULT_FAMILIES,
-        include_wavelet=not args.no_wavelet,
-        n_jobs=args.n_jobs,
-    )
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(out_dir / 'enface_maps.npz', **maps)
-    preview = np.nanmean(volume, axis=1)
-    pd.DataFrame([{'feature': k, 'mean': float(np.nanmean(v)), 'std': float(np.nanstd(v))} for k, v in maps.items()]).to_csv(out_dir / 'enface_summary.csv', index=False)
-    plot_feature_mosaic(preview, maps, meta=None, out_path=out_dir / 'enface_mosaic.png')
+#     maps = project_bscan_texture_to_enface(
+#         volume,
+#         upper_bound=upper,
+#         lower_bound=lower,
+#         z_step=1,
+#         window=args.window, #Will fail
+#         step=args.step,
+#         pad=args.pad,
+#         families=DEFAULT_FAMILIES,
+#         include_wavelet=not args.no_wavelet,
+#         n_jobs=args.n_jobs,
+#     )
+#     out_dir = Path(args.out_dir)
+#     out_dir.mkdir(parents=True, exist_ok=True)
+#     np.savez_compressed(out_dir / 'enface_maps.npz', **maps)
+#     preview = np.nanmean(volume, axis=1)
+#     pd.DataFrame([{'feature': k, 'mean': float(np.nanmean(v)), 'std': float(np.nanstd(v))} for k, v in maps.items()]).to_csv(out_dir / 'enface_summary.csv', index=False)
+#     plot_feature_mosaic(preview, maps, meta=None, out_path=out_dir / 'enface_mosaic.png')
 
 def run_oct_texture_pipeline(args):
     import zarr

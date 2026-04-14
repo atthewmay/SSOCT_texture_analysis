@@ -192,6 +192,8 @@ def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,layers_root
     return labels_zarr
 
 
+# Might it just be simpler to modify this function s.t. w/ triggering from a string name. I think if the string starts with "slab_..." then we invoke just a modificaiton in the layer s.t. we draw from the dictionary to find the correct name, make like two temp layers w/ the proper offset, and pass those into fu.curves_to_label_vol(. Why not just do this?
+
 def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1):
     LABEL_SETS = {
         'basics': ["hypersmoother_path", "rpe_smooth", "ilm_raw", "ilm_smooth"],
@@ -213,6 +215,7 @@ def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1
             'choroidal_method_y1_vertical_shifted',
             'EZ_method_y2_vertical_shifted',
         ],
+        
     }
 
     class _LayerShim:
