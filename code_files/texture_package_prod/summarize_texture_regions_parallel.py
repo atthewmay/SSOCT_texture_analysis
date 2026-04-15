@@ -15,6 +15,7 @@ from scipy import ndimage
 from skimage.transform import AffineTransform, warp
 
 from code_files.texture_package_prod.texture_enface_utils import make_enface_isotropic_x
+import file_utils as fu
 
 
 # ---------------------------------------------------------------------
@@ -500,22 +501,10 @@ def save_summary_plots(
 # ---------------------------------------------------------------------
 # Main workflow
 # ---------------------------------------------------------------------
-def split_pair_id_and_eye(case_id: str) -> tuple[str, str]:
-    m = re.search(r"(?:^|[_-])(OD|OS)(?:[_.-]|$)", case_id.upper())
-    if not m:
-        raise ValueError(f"Could not find OD or OS in case_id: {case_id}")
-
-    eye = m.group(1)
-
-    pair_id = re.sub(
-        r"(?:^|[_-])(OD|OS)(?=[_.-]|$)",
-        "",
-        case_id,
-        flags=re.I,
-    )
-    pair_id = re.sub(r"[_-]{2,}", "_", pair_id).strip("_-.")
-
-    return pair_id, eye
+def split_int_id_and_eye(case_id: str) -> tuple[str, str]:
+    int_id = fu.get_integer_id(case_id)
+    eye = fu.get_eye(case_id)
+    return int_id, eye
 
 
 def _burden_region_lists(regions: list[str]) -> tuple[list[str], list[str]]:
@@ -571,15 +560,16 @@ def add_intereye_burden_rows(summary_long: pd.DataFrame) -> pd.DataFrame:
     base = summary_long.loc[summary_long["stat"] == "mean"].copy()
 
     case_meta = base[["case_id"]].drop_duplicates().copy()
-    case_meta[["pair_id", "eye"]] = case_meta["case_id"].apply(
-        lambda s: pd.Series(split_pair_id_and_eye(s))
+    case_meta[["int_id", "eye"]] = case_meta["case_id"].apply(
+        lambda s: pd.Series(split_int_id_and_eye(s))
     )
 
     base = base.merge(case_meta, on="case_id", how="left")
 
     new_rows = []
 
-    for pair_id, pair_df in base.groupby("pair_id", sort=False):
+    for int_id, pair_df in base.groupby("int_id", sort=False):
+        print(f"adding the intereye for {int_id}")
         eyes = pair_df[["case_id", "eye"]].drop_duplicates()
 
         if set(eyes["eye"]) != {"OD", "OS"}:
@@ -869,7 +859,7 @@ def main() -> None:
         raise RuntimeError("No cases completed successfully")
 
     summary_long = pd.concat(all_df, ignore_index=True)
-    summary_long = add_intereye_burden_rows(summary_long) # this is where we will rerun
+    summary_long = add_intereye_burden_rows(summary_long) # this is where we will rerun/
     summary_long.to_csv(args.outdir / "texture_region_summary_long.csv", index=False)
 
     summary_wide = summary_long.pivot_table(

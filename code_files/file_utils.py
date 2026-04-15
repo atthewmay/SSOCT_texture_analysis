@@ -655,3 +655,15 @@ def load_saved_enface_maps(vol_out_dir: str | Path):
         "texture_maps": texture_maps,
         "projected_texture_maps": projected_texture_maps,
     }
+
+
+def get_integer_id(x):
+    m = re.match("(.*)_Cube.*_(OD|OS).*",x)
+    integer_id = m.group(1)
+    return integer_id
+
+
+def get_eye(x):
+    m = re.match("(.*)_Cube.*_(OD|OS).*",x)
+    eye = f"{m.group(2)}"
+    return eye

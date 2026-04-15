@@ -9,6 +9,7 @@ import code_files.visualization_utils as vu
 import code_files.file_utils as fu
 from concurrent.futures import ProcessPoolExecutor
 
+import time
 C = fu.load_constants()
 
 ### The following are derived from our napari work. Lot's of good stuff here for zarr and dask to enable silky smooth loading and scrolling
@@ -193,10 +194,71 @@ def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,layers_root
 
 
 # Might it just be simpler to modify this function s.t. w/ triggering from a string name. I think if the string starts with "slab_..." then we invoke just a modificaiton in the layer s.t. we draw from the dictionary to find the correct name, make like two temp layers w/ the proper offset, and pass those into fu.curves_to_label_vol(. Why not just do this?
+def _parse_layer_spec(spec: str):
+    """
+    Accept either:
+      - 'rpe_smooth'
+      - 'rpe_smooth|10:20'
+      - 'rpe_smooth|-20:-10'
+    """
+    spec = spec.strip()
+    if "|" not in spec:
+        return "curve", spec, None
+
+    base, offs = spec.split("|", 1)
+    a, b = offs.split(":", 1)
+    return "slab", base.strip(), (int(a), int(b))
+
+
+def _build_slab_vol_from_curve(curve, image_height, offsets):
+    """
+    curve: (Z, W)
+    offsets are relative to the curve in image-row coordinates.
+    Positive = deeper/below, negative = above.
+    Returns a binary (Z, H, W) volume with 1 inside the slab.
+    """
+    t1 = time.time()
+    curve = np.asarray(curve, dtype=np.float32)
+    Z, W = curve.shape
+    H = int(image_height)
+    out = np.zeros((Z, H, W), dtype=np.uint8)
+
+    off0, off1 = offsets
+    x_all = np.arange(W, dtype=np.int32)
+
+    for z in range(Z):
+        row = curve[z]
+        valid = np.isfinite(row)
+        if not np.any(valid):
+            continue
+
+        x = x_all[valid]
+        y = np.rint(row[valid]).astype(np.int32)
+
+        y0 = np.clip(y - off0, 0, H - 1)
+        y1 = np.clip(y - off1, 0, H - 1)
+
+        y_lo = np.minimum(y0, y1)
+        y_hi = np.maximum(y0, y1)
+
+        for xi, lo, hi in zip(x, y_lo, y_hi):
+            out[z, lo:hi + 1, xi] = 1
+
+    
+    print(f"built a slab from curves in {time.time()-t1}")
+
+    return out
 
 def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1):
     LABEL_SETS = {
-        'basics': ["hypersmoother_path", "rpe_smooth", "ilm_raw", "ilm_smooth"],
+        'basics': [
+            "hypersmoother_path",
+            "rpe_smooth",
+            "ilm_raw",
+            "ilm_smooth",
+            # example slab:
+            # "rpe_smooth|10:20",
+        ],
         'ILM': ["ilm_raw", "ilm_smooth"],
         'two_layer_original': [
             'original_method_y1_vertical_shifted',
@@ -215,7 +277,11 @@ def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1
             'choroidal_method_y1_vertical_shifted',
             'EZ_method_y2_vertical_shifted',
         ],
-        
+
+        # cleaner usage as separate toggleable sets:
+        'rpe_slab_10_20_original': ['original_method_y2_vertical_shifted|10:20'],
+        'rpe_slab_10_20_EZ': ['EZ_method_y2_vertical_shifted|10:20'],
+        'rpe_slab_10_20_choroidal': ['choroidal_method_y1_vertical_shifted|10:20'],
     }
 
     class _LayerShim:
@@ -228,22 +294,110 @@ def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1
 
     layer_shim = _LayerShim(layers)
 
+    for example in layer_shim._d.values():
+        if np.asarray(example).ndim == 2:
+            break
+    else:
+        raise ValueError("No 2D layer arrays found")
+    Z, W = np.asarray(example).shape
+    H = int(image_height)
 
     vols = {}
-    for set_name, names in LABEL_SETS.items():
-        names = [n for n in names if n in layer_shim._d.keys()]
-        if not names:
+    for set_name, specs in LABEL_SETS.items():
+        vol = np.zeros((Z, H, W), dtype=np.uint16)
+        label_idx = 1
+
+        for spec in specs:
+            kind, base_name, offsets = _parse_layer_spec(spec)
+
+            if base_name not in layer_shim._d:
+                continue
+
+            if kind == "curve":
+                tmp = fu.curves_to_label_vol(
+                    layer_shim,
+                    image_height=image_height,
+                    vert_dilation_size=vert_dilation_size,
+                    names_to_use=[base_name],
+                )
+                mask = tmp > 0
+
+            elif kind == "slab":
+                tmp = _build_slab_vol_from_curve(
+                    layer_shim[base_name],
+                    image_height=image_height,
+                    offsets=offsets,
+                )
+                mask = tmp > 0
+
+            else:
+                raise ValueError(f"Unknown layer spec kind: {kind}")
+
+            vol[(vol == 0) & mask] = label_idx
+            label_idx += 1
+
+        if label_idx == 1:
             continue
-        v = fu.curves_to_label_vol(
-            layer_shim,
-            image_height=image_height,
-            vert_dilation_size=vert_dilation_size,
-            names_to_use=names,
-        )
+
         if z_stride > 1:
-            v = v[::z_stride]
-        vols[set_name] = v.astype(np.uint8, copy=False)
+            vol = vol[::z_stride]
+
+        out_dtype = np.uint8 if (label_idx - 1) <= 255 else np.uint16
+        vols[set_name] = vol.astype(out_dtype, copy=False)
+
     return vols
+
+
+# def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1):
+#     LABEL_SETS = {
+#         'basics': ["hypersmoother_path", "rpe_smooth", "ilm_raw", "ilm_smooth"],
+#         'ILM': ["ilm_raw", "ilm_smooth"],
+#         'two_layer_original': [
+#             'original_method_y1_vertical_shifted',
+#             'original_method_y2_vertical_shifted',
+#         ],
+#         'two_layer_choroidal': [
+#             'choroidal_method_y1_vertical_shifted',
+#             'choroidal_method_y2_vertical_shifted',
+#         ],
+#         'two_layer_EZ': [
+#             'EZ_method_y1_vertical_shifted',
+#             'EZ_method_y2_vertical_shifted',
+#         ],
+#         'all_methods_RPE': [
+#             'original_method_y2_vertical_shifted',
+#             'choroidal_method_y1_vertical_shifted',
+#             'EZ_method_y2_vertical_shifted',
+#         ],
+        
+#     }
+
+#     class _LayerShim:
+#         def __init__(self, d):
+#             self._d = d
+#             self.files = list(d.keys())
+
+#         def __getitem__(self, key):
+#             return self._d[key]
+
+#     layer_shim = _LayerShim(layers)
+
+
+#     vols = {}
+#     for set_name, names in LABEL_SETS.items():
+#         names = [n for n in names if n in layer_shim._d.keys()]
+#         if not names:
+#             continue
+#         v = fu.curves_to_label_vol(
+#             layer_shim,
+#             image_height=image_height,
+#             vert_dilation_size=vert_dilation_size,
+#             names_to_use=names,
+#         )
+#         if z_stride > 1:
+#             v = v[::z_stride]
+#         vols[set_name] = v.astype(np.uint8, copy=False)
+#     return vols
 
 
 
@@ -676,7 +830,7 @@ def ensure_nonflat_artifacts(
         out["image_zarr"] = ensure_image_zarr(
             vol_path,
             z_stride=z_stride,
-            overwrite=overwrite,
+            overwrite=False, # Hard set, will likely want to change later
         )
 
     if make_label_zarr:
