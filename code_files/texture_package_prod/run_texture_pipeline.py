@@ -33,12 +33,12 @@ import time
 
 
 DEFAULT_FAMILIES = (
-    'firstorder',
-    'heterogeneity',
-    'band_energy',
+    # 'firstorder',
+    # 'heterogeneity',
+    # 'band_energy',
     'glcm',
-    'glrlm', 'glszm', 'gldm', 'ngtdm', 'lbp', 
-    'gradient',
+    # 'glrlm', 'glszm', 'gldm', 'ngtdm', 'lbp', 
+    # 'gradient',
 )
 
 
