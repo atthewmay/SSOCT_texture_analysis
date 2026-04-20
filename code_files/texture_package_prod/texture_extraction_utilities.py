@@ -1197,7 +1197,9 @@ def instantiate_fullsize_texture_volumes_from_compact_zarr(
         features = [f for f in all_features if f in keep]
 
     if not features:
-        raise ValueError('No features selected for instantiation')
+
+        print(f'All features are :{all_features}')
+        raise ValueError('No features selected for instantiation.\n\n')
 
     sample_meta = DenseMapMeta(
         row_centers=np.asarray(manifest['row_centers_full'], dtype=int) - y_min,

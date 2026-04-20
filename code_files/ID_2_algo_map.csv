@@ -4,7 +4,7 @@ Integer ID,Laterality,Algorithm Type
 11,OD,Original
 11,OS,Original
 1,OD,Choroidal
-1,OS,EZ
+1,OS,Original
 13,OD,Original
 13,OS,Original
 14,OD,Original
@@ -19,6 +19,8 @@ Integer ID,Laterality,Algorithm Type
 22,OS,Original
 24,OD,Original
 24,OS,EZ
+23,OD,Original
+23,OS,Original
 25,OD,Original
 25,OS,Original
 28,OD,Original
