@@ -23,8 +23,12 @@ Integer ID,Laterality,Algorithm Type
 23,OS,Original
 25,OD,Original
 25,OS,Original
+27,OD,Choroidal
+27,OS,Original
 28,OD,Original
 28,OS,Choroidal
+29,OD,Choroidal
+29,OS,Choroidal
 2,OD,EZ
 2,OS,EZ
 30,OD,Original
