@@ -464,7 +464,8 @@ def draw_etdrs_overlay(
     exclusion_mask: np.ndarray | None = None,
     title: str | None = None,
 ):
-    ax.imshow(_normalize_for_display(image), cmap="inferno")
+    # ax.imshow(_normalize_for_display(image), cmap="inferno")
+    ax.imshow(image, cmap="inferno")
     fx, fy = fovea_xy
 
     if exclusion_mask is not None and exclusion_mask.any():

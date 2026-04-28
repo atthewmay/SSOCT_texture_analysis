@@ -581,3 +581,5 @@ RPE_STEPS_unified_3_19_26: List[ssf.RPEStepFn] = [ # Exploring the addition of a
     ssf.step_rpe_vertical_shift_refine, # repeat and save teh computation
     # ssf.step_rpe_choroidal_EZ_endpoint_plot,
 ]
+
+RPE_STEPS_ARVO2026: List[ssf.RPEStepFn] = RPE_STEPS_unified_3_19_26[:-1] + [ssf.ckpt(ssf.step_rpe_vertical_shift_refine,overwrite=False,save_by_ID=True,type="RPE")] + [ssf.step_rpe_endpoint_plot_minimal]

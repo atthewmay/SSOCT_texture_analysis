@@ -15,7 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--root",
         type=str,
-        default = '/Volumes/T9/iowa_research/Han_AIR_Dec_2025/results/enface_maps/4_13_26',
+        default = '/Volumes/T9/iowa_research/Han_AIR_Dec_2025/results/enface_maps/4_21_26',
         help="Path to the input file or directory.",
     )
     return parser
@@ -55,5 +55,5 @@ for subd_name, feats in sorted(feature_sets.items()):
             print(f"  {feat}")
     if not missing:
         print(f"\n{subd_name} has all features!")
-        for feat in all_features:
-            print(f"  {feat}")
+        # for feat in all_features:
+            # print(f"  {feat}")

@@ -507,7 +507,6 @@ def get_all_vol_paths(vol_dir,glob=None,cube_numbers=None,use_skip_yaml=False):
     return ALL_VOL_PATHS
 
 
-
 def load_training_ids(
     excel_path,
     sheet_name=0,
@@ -515,10 +514,18 @@ def load_training_ids(
     split_col="split",
 ):
     """
-    Return training IDs from a workbook that already has a split column.
+    Return training IDs from a csv/xlsx file that already has a split column.
     """
     import pandas as pd
-    df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    from pathlib import Path
+
+    path = Path(excel_path)
+    if path.suffix.lower() == ".csv":
+        df = pd.read_csv(path)
+    elif path.suffix.lower() in {".xlsx", ".xls"}:
+        df = pd.read_excel(path, sheet_name=sheet_name)
+    else:
+        raise ValueError(f"Unsupported file type: {path.suffix}")
 
     if id_col not in df.columns:
         raise ValueError(f"Missing required column: {id_col}")

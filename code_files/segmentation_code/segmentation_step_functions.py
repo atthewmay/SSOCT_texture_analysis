@@ -2918,8 +2918,120 @@ def step_rpe_choroidal_EZ_endpoint_plot(ctx: RPEContext) -> RPEContext:
     # raise Exception("endpoint plotting complete. Terminating here!")
     return ctx
 
+def step_rpe_endpoint_plot_minimal(ctx: RPEContext) -> RPEContext:
+    """Plot a minimal RPE/EZ/choroidal endpoint summary."""
+    print("will be trying to plot the minimal RPE summary now")
 
+    import math
+    from pathlib import Path
+    import matplotlib.pyplot as plt
 
+    save_base = (
+        f"/Users/matthewhunt/Research/Iowa_Research/Han_AIR/results/"
+        f"temp_choroidal_grab_figs/minimal_EZ_CHR_plot_step_{ctx.ID}"
+    )
+
+    if not hasattr(ctx.highres_ctx, "diff_down_up") or ctx.highres_ctx.diff_down_up is None:
+        raise Exception(
+            "We are intentionally terminating rpe plotting early as it appears "
+            "the highres pipeline was not actually run"
+        )
+
+    y2_for_original = getattr(
+        ctx.two_layer_dp_ctx,
+        "y2_vertical_shifted",
+        getattr(ctx.two_layer_dp_ctx, "y2_rescaled", ctx.two_layer_dp_ctx.y2),
+    )
+
+    panels = [
+        dict(
+            img=ctx.original_image,
+            title="Original",
+            lines=[],
+        ),
+        dict(
+            img=ctx.hypersmoother_params.coarse_hypersmoothed_img,
+            title="Coarse Processing",
+            lines=[
+                ("hypersmoother", ctx.hypersmoother_params.hypersmoother_y_dp, "lightgreen"),
+            ],
+        ),
+        dict(
+            img=ctx.hypersmoothed_img,
+            title="Coarse Flattening",
+            lines=[],
+        ),
+        dict(
+            img=ctx.peak_suppressed,
+            title="Gradient Processed",
+            lines=[],
+        ),
+        dict(
+            img=ctx.original_image,
+            title="Original with Initial RPE Segmentation",
+            lines=[
+                ("rpe_smooth", ctx.rpe_smooth, "yellow"),
+            ],
+        ),
+        dict(
+            img=ctx.highres_ctx.diff_down_up,
+            title="High-Resolution Gradient Processed",
+            lines=[],
+        ),
+        dict(
+            img=ctx.two_layer_dp_ctx.img_band,
+            title="2-Layer Segmentation",
+            lines=[
+                ("y1", ctx.two_layer_dp_ctx.y1, "orange"),
+                ("y2", ctx.two_layer_dp_ctx.y2, "cyan"),
+            ],
+        ),
+        dict(
+            img=ctx.original_image,
+            title="Final RPE Segmentation",
+            lines=[
+                ("ILM", ctx.ilm_ctx.ilm_smooth, "magenta"),
+                ("two_layer_y2", y2_for_original, "cyan"),
+            ],
+        ),
+    ]
+
+    ncols = 4
+    nrows = math.ceil(len(panels) / ncols)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4.0 * nrows))
+    axes = axes.ravel() if hasattr(axes, "ravel") else [axes]
+
+    for ax, panel in zip(axes, panels):
+        img = panel["img"]
+        ax.imshow(img, cmap="gray", aspect="auto")
+        ax.set_title(panel["title"])
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        for _, line, color in panel["lines"]:
+            if line is None:
+                continue
+            ax.plot(
+                range(len(line)),
+                line,
+                color=color,
+                linewidth=1,
+            )
+
+    for ax in axes[len(panels):]:
+        ax.axis("off")
+
+    plt.tight_layout()
+
+    save_base_path = Path(save_base)
+    save_base_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(f"{save_base}.png", dpi=200, bbox_inches="tight")
+    fig.savefig(f"{save_base}.pdf", bbox_inches="tight")
+    plt.close(fig)
+
+    raise Exception("Completed plotting, intentionally stopping")
+    return ctx
 
 
 
