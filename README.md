@@ -2,13 +2,13 @@
 
 ### Volume Processing
 
-| Raw OCT volume | RPE/ILM segmentation |
+<!-- | Raw OCT volume | RPE/ILM segmentation |
 |---|---|
 | <img src="docs/assets/raw_scroll.gif" width="420"> | <img src="docs/assets/layer_scroll.gif" width="420"> |
 
 | RPE-flattened volume | Texture volume (local binary pattern entropy) |
 |---|---|
-| <img src="docs/assets/flat_scroll.gif" width="420"> | <img src="docs/assets/texture_scroll.gif" width="420"> |
+| <img src="docs/assets/flat_scroll.gif" width="420"> | <img src="docs/assets/texture_scroll.gif" width="420"> | -->
 
 <p align="center">
   <strong>Raw OCT volume</strong><br>
