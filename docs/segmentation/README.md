@@ -112,6 +112,13 @@ A real gem of this project is the interactivity.
 
 Use the file napari_run_with_layers_pagination.py for a smooth-scrolling visualization of volumes and layers (and textures if relevant). Buttons on the right hand side allow for testing of new pipelines while viewing (kick off a segmentation job as background process and display a new arrayboard saved as a pdf).
 
+
+<p align="center">
+  <img src="../assets/napari_demo.gif" width="700">
+  <br>
+  <em>Interactive viewer with prototyping/debugging tools.</em>
+</p>
+
 ## How the segmentation code is organized
 
 The segmentation code is intentionally split into three layers:

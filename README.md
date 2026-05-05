@@ -57,6 +57,13 @@ This repository contains:
 - Annotation tools for data preprocessing (optic nerve head and fovea selection)
 
 <p align="center">
+  <img src="docs/assets/napari_demo.gif" width="700">
+  <br>
+  <em>Interactive viewer with prototyping/debugging tools.</em>
+</p>
+
+
+<p align="center">
   <img src="docs/assets/annotation_tool.gif" width="700">
   <br>
   <em>Interactive fovea / optic nerve head annotation tool.</em>
