@@ -1,4 +1,9 @@
-## Visual Overview
+## Overview
+This repository contains (in order of importance)
+1. Novel, open-source RPE and ILM segmentation algorithms for swept source OCT imaging, robust across diverse retinal degenerative phenotypes.
+    - Detailed explanation of algorithm found here. 
+2. Retinal texture analysis methods
+3. The specific ML pipeline used in our study to distinguish autoimmune retinopathy from retinitis pigmentosa
 
 ### Volume Processing
 
@@ -16,7 +21,7 @@
 </p>
 
 <p align="center">
-  <strong>RPE/ILM segmentation</strong><br>
+  <strong>Open Source RPE/ILM segmentation</strong><br>
   <img src="docs/assets/layer_scroll.gif" width="700">
 </p>
 
