@@ -1,23 +1,4 @@
 # Segmentation algorithm: panel-by-panel explanation
-Reviewed already. 
-
-
-This file is meant to be populated by the panel export helper:
-
-```python
-from code_files.segmentation_code.segmentation_readme_panels import (
-    save_segmentation_readme_panels,
-)
-
-save_segmentation_readme_panels(
-    ctx_ilm=ilm_ctx,
-    ctx_rpe=rpe_ctx,
-    out_dir="docs/assets/segmentation_panels/example_volume_z0250",
-    prefix="example",
-)
-```
-
-The function writes cropped PNGs and a `panels_manifest.md` file. Paste the generated manifest below this introduction.
 
 ## Narrative
 
