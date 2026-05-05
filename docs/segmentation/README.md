@@ -1,5 +1,6 @@
 # Segmentation pipeline
-Reviewed already
+
+[Detailed pictorial algorithm explanation](docs/segmentation/segmentation_algorithm.md)
 
 This folder documents the OCT B-scan layer segmentation code used in this project. The goal is to turn each raw SSOCT B-scan into column-wise retinal layer paths that can be stacked across `z` and reused by the flattening, en-face, and texture-analysis pipelines.
 
@@ -12,7 +13,6 @@ This folder documents the OCT B-scan layer segmentation code used in this projec
   <em>Raw OCT volume and the corresponding layer-overlay scroll view.</em>
 </p>
 
-> Replace the two image paths above if this README lives somewhere other than `docs/segmentation/`. For GitHub/mobile display, keep images under ~45% width each, or stack them vertically with `width="90%"`.
 
 ---
 
