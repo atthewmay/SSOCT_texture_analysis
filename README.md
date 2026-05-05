@@ -1,7 +1,8 @@
 ## Overview
-This repository contains (in order of importance)
-1. Novel, open-source RPE and ILM segmentation algorithms for swept source OCT imaging, robust across diverse retinal degenerative phenotypes.
-    - Detailed explanation of algorithm found here. 
+This repository contains: 
+1. Novel, open-source RPE and ILM segmentation algorithms for swept source OCT imaging, robust across diverse retinal degenerative phenotypes
+    - [Quickstart guide for segmentation algorithms](docs/segmentation/README.md)
+    - [Detailed pictorial algorithm explanation](docs/segmentation/SEGMENTATION_ALGORITHM.md)
 2. Retinal texture analysis methods
 3. The specific ML pipeline used in our study to distinguish autoimmune retinopathy from retinitis pigmentosa
 
@@ -51,6 +52,9 @@ This repository contains (in order of importance)
 </p>
 
 ### Development Tools
+- Napari based tools for inspecting volumes, layers, and textures
+    - Interactive for prototyping segmentations and debugging
+- Annotation tools for data preprocessing (optic nerve head and fovea selection)
 
 <p align="center">
   <img src="docs/assets/annotation_tool.gif" width="700">
@@ -58,9 +62,8 @@ This repository contains (in order of importance)
   <em>Interactive fovea / optic nerve head annotation tool.</em>
 </p>
 
-- Napari based tools for inspecting volumes, layers, and textures
-    - Interactive for prototyping segmentations and debugging
-- Annotation tools for data preprocessing (optic nerve head and fovea selection)
+### Get Started
+
 
 
 The license applies to source code in this repository. It does not grant rights to any clinical imaging data, annotations, trained models, or third-party datasets referenced by the code.
