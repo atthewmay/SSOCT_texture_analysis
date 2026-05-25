@@ -9,7 +9,7 @@ import numpy as np
 import argparse
 import code_files.file_utils as fu
 
-from segmentation_button import add_segmentation_button
+from segmentation_button import add_segmentation_button,add_ez_finder_button
 
 from code_files.zarr_file_utils import ensure_nonflat_artifacts, ensure_flattened_artifacts
 # Multithreading hack for older python
@@ -95,6 +95,7 @@ def parse_args():
     p.add_argument("--show_texture_overlay", action="store_true")
     p.add_argument("--texture_zarr_root", type=str, default=None)
     p.add_argument("--texture_features", type=str, default=None)
+    p.add_argument("--ez_outputs_root", type=str, default=None)
 
 
 
@@ -140,6 +141,37 @@ def from_zarr_fresh(path: str):
     mtime = Path(path).stat().st_mtime_ns
     return da.from_zarr(za, name=f"from_zarr-{mtime}-{time.time_ns()}")
 
+
+def _align_zarr_to_display_z(raw_arr, displayed_img, z_stride: int, name: str):
+    """
+    Align a label/annotation/texture zarr to the displayed image Z axis.
+
+    Cases:
+      1. raw_arr.shape[0] == displayed_img.shape[0]:
+         already display-space, do not stride again.
+      2. raw_arr.shape[0] > displayed_img.shape[0]:
+         assume full-Z, apply [::z_stride].
+      3. raw_arr.shape[0] < displayed_img.shape[0]:
+         likely sparse/mismatched; use as-is but warn.
+    """
+    if raw_arr.shape[0] == displayed_img.shape[0]:
+        print(f"[z-align] {name}: already display-space z={raw_arr.shape[0]}")
+        return raw_arr
+
+    if raw_arr.shape[0] > displayed_img.shape[0]:
+        out = raw_arr[::z_stride]
+        print(
+            f"[z-align] {name}: full-Z -> display-Z using z_stride={z_stride}: "
+            f"{raw_arr.shape[0]} -> {out.shape[0]}"
+        )
+        return out
+
+    print(
+        f"[z-align] WARNING {name}: z={raw_arr.shape[0]} is less than "
+        f"display image z={displayed_img.shape[0]}; using as-is."
+    )
+    return raw_arr
+
 def load_one_volume(
     vp: Path,
     *,
@@ -152,6 +184,7 @@ def load_one_volume(
     show_texture_overlay=False,
     texture_zarr_root=None,
     texture_features=None,   # None -> all
+    ez_outputs_root=None
 ):
     """
     Return (img, lbl, annotation_img, name) for one volume.
@@ -175,14 +208,16 @@ def load_one_volume(
     flattener_name = None
     texture = {}
     if view_mode == "nonflat":
+        have_layers = layers_root is not None
         artifacts = ensure_nonflat_artifacts(
             vp,
             layers_root=layers_root,
             annotation_root=annotation_root,
+            ez_outputs_root=ez_outputs_root,
             z_stride=1,              # keep cached raw artifacts full-Z
             overwrite=overwrite,
             make_image_zarr=True,
-            make_label_zarr=True,
+            make_label_zarr=have_layers,
             make_annotation_zarr=True,
         )
 
@@ -190,11 +225,21 @@ def load_one_volume(
         img = img[::z_stride]
         img = img.rechunk((1, img.shape[-2], img.shape[-1]))
 
-        g = zarr.open_group(str(artifacts["label_zarr"]), mode="r")
-        lbl = {
-            name: da.from_zarr(g[name])[::z_stride].rechunk((1, g[name].shape[-2], g[name].shape[-1]))
-            for name in g.array_keys()
-        }
+        # lbl = {}
+        # if artifacts["label_zarr"] is not None:
+        #     g = zarr.open_group(str(artifacts["label_zarr"]), mode="r")
+        #     lbl = {
+        #         name: da.from_zarr(g[name])[::z_stride].rechunk((1, g[name].shape[-2], g[name].shape[-1]))
+        #         for name in g.array_keys()
+        #     }
+
+        lbl = {}
+        if artifacts["label_zarr"] is not None:
+            g = zarr.open_group(str(artifacts["label_zarr"]), mode="r")
+            for name in g.array_keys():
+                raw_lbl = da.from_zarr(g[name])
+                lbl_arr = _align_zarr_to_display_z(raw_lbl, img, z_stride, f"label:{name}")
+                lbl[name] = lbl_arr.rechunk((1, lbl_arr.shape[-2], lbl_arr.shape[-1]))
 
     else:
         flattener_name = fu.get_algorithm_key_from_filepath(vp)
@@ -332,6 +377,7 @@ def main():
                 show_texture_overlay=args.show_texture_overlay,
                 texture_zarr_root=args.texture_zarr_root,
                 texture_features=texture_features,
+                ez_outputs_root=args.ez_outputs_root,
             )
 
 
@@ -357,7 +403,12 @@ def main():
                 rendering="translucent",
                 contrast_limits=clims,
                 scale=scale,
-                metadata={"src_path": str(vp)},
+                metadata={
+                    "src_path": str(vp),
+                    "vol_stem": vp.stem,
+                    "z_stride": args.z_stride,
+                    "layers_root": str(args.layers_root),
+                },
             )
 
             # if args.view_mode == "nonflat":
@@ -402,6 +453,11 @@ def main():
         else:
             state["img_layer"].data = img
             state["img_layer"].metadata["src_path"] = str(vp)
+            state["img_layer"].metadata["vol_stem"] = vp.stem
+            state["img_layer"].metadata["z_stride"] = args.z_stride
+            state["img_layer"].metadata["layers_root"] = str(args.layers_root)
+
+
 
             for lyr in list(state["lbl_layers"].values()):
                 viewer.layers.remove(lyr)
@@ -521,7 +577,11 @@ def main():
     viewer.bind_key('Ctrl-]', _next_volume, overwrite=True)
     viewer.bind_key('Ctrl-[', _prev_volume, overwrite=True)
 
-    add_segmentation_button(viewer,z_stride=args.z_stride)
+    add_segmentation_button(viewer,
+                            annotation_root = args.annotation_root,
+                            z_stride=args.z_stride)
+    add_ez_finder_button(viewer,
+                         z_stride=args.z_stride)
     print("now running (pagination: '[' prev, ']' next, 'L' toggle labels)")
     napari.run()
 

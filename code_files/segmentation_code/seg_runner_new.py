@@ -222,6 +222,7 @@ def main():
     ap.add_argument('--z_index')  # <-- ADD
     ap.add_argument('--z_stride')  # <-- ADD
     ap.add_argument('--RPE_OR_ILM',type=str,default="RPE")  # <-- ADD
+    ap.add_argument("--annotation_root", type=Path, default=None)
     args = ap.parse_args()
 
     # Load current (first) slice — always page 1
@@ -230,7 +231,8 @@ def main():
     filename = Path(args.img_src_path).stem
     work_id = filename+"_idx:"+str(args.z_index)
 
-    onh_info_path = fu.image_to_annotation_path(Path(args.img_src_path))
+    onh_info_path = fu.image_to_annotation_path(Path(args.img_src_path),
+                                                ann_root = args.annotation_root)
     try:
         current_onh_info = grab_current_onh_info(onh_info_path,
                                                  int(args.z_index),
@@ -284,7 +286,9 @@ def main():
     # rpe_segmentation_steps = sp.RPE_STEPS_2_28_26
     # rpe_segmentation_steps = sp.RPE_STEPS_3_7_26
     # rpe_segmentation_steps = sp.RPE_STEPS_CHOROIDAL_3_9_26
-    rpe_segmentation_steps = sp.RPE_STEPS_ARVO2026
+    # rpe_segmentation_steps = sp.RPE_STEPS_3_19_26_withplot
+    # rpe_segmentation_steps = sp.RPE_STEPS_ARVO2026
+    rpe_segmentation_steps = sp.RPE_STEPS_README_DEMO
     # if args.RPE_OR_ILM == 'RPE':
     if args.debug or args.max_workers <= 1:
         # Serial, pdb-friendly path

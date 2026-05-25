@@ -583,3 +583,7 @@ RPE_STEPS_unified_3_19_26: List[ssf.RPEStepFn] = [ # Exploring the addition of a
 ]
 
 RPE_STEPS_ARVO2026: List[ssf.RPEStepFn] = RPE_STEPS_unified_3_19_26[:-1] + [ssf.ckpt(ssf.step_rpe_vertical_shift_refine,overwrite=False,save_by_ID=True,type="RPE")] + [ssf.step_rpe_endpoint_plot_minimal]
+
+RPE_STEPS_README_DEMO: List[ssf.RPEStepFn] = RPE_STEPS_unified_3_19_26[:-1] + [ssf.ckpt(ssf.step_rpe_vertical_shift_refine,overwrite=False,save_by_ID=True,type="RPE")] + [ssf.step_rpe_export_readme_panels]
+
+RPE_STEPS_3_19_26_withplot: List[ssf.RPEStepFn] = RPE_STEPS_unified_3_19_26[:-1] + [ssf.ckpt(ssf.step_rpe_vertical_shift_refine,overwrite=True,save_by_ID=True,type="RPE")] + [ssf.step_rpe_choroidal_EZ_endpoint_plot]

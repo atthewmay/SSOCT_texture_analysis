@@ -197,6 +197,104 @@ def process_volume_lite(vol_fp, *, z_step=1, max_workers=8, rpe_steps=None,ilm_s
 
     return vol_out
 
+# 5/13 mod to permit much better performance on lower-ram systems. Don't store all CTX's
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+def _process_bscan_lite_worker(args):
+    """
+    Run one B-scan and return only the lightweight extracted dict.
+
+    This prevents the parent process from accumulating all full ctx objects.
+    Must be top-level for ProcessPoolExecutor pickling.
+    """
+    fn, t, rpe_steps, ilm_steps, z = args
+
+    k, ilm_ctx, rpe_ctx, work_id = fn(t, False, rpe_steps, ilm_steps)
+
+    d = extract_lite(ilm_ctx, rpe_ctx)
+
+    return int(k), int(z), d
+
+def process_volume_lite_streaming(
+    vol_fp,
+    *,
+    z_step=1,
+    max_workers=8,
+    rpe_steps=None,
+    ilm_steps=None,
+    out_dir=None,
+    annotation_root=None,
+):
+    vol_fp = Path(vol_fp)
+    vol_id = vol_fp.with_suffix("").name
+
+    vol, onh = fu.load_vol_and_annotation(vol_fp, annotation_root)
+
+    z_idx = np.arange(0, vol.shape[0], int(z_step))
+    work = build_work(vol, onh, z_idx, vol_id)
+
+    vol_out = Path(out_dir) / vol_id
+    vol_out.mkdir(parents=True, exist_ok=True)
+
+    fn = sp.process_bscan_1_3_26  # returns (idx, ilm_ctx, rpe_ctx, work_id)
+
+    STACK_KEYS = [
+        "hypersmoother_path",
+        "rpe_raw",
+        "rpe_smooth",
+        "ilm_raw",
+        "ilm_smooth",
+
+        "original_method_y1_rescaled",
+        "original_method_y2_rescaled",
+        "original_method_y1_vertical_shifted",
+        "original_method_y2_vertical_shifted",
+
+        "choroidal_method_y1_rescaled",
+        "choroidal_method_y2_rescaled",
+        "choroidal_method_y1_vertical_shifted",
+        "choroidal_method_y2_vertical_shifted",
+
+        "EZ_method_y1_rescaled",
+        "EZ_method_y2_rescaled",
+        "EZ_method_y1_vertical_shifted",
+        "EZ_method_y2_vertical_shifted",
+    ]
+
+    slice_dicts = []
+
+    if max_workers <= 1:
+        for t, z in zip(work, z_idx):
+            k, z, d = _process_bscan_lite_worker(
+                (fn, t, rpe_steps, ilm_steps, int(z))
+            )
+
+            _save_npz(vol_out / f"z{z:04d}.npz", d)
+            slice_dicts.append((z, d))
+
+    else:
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futs = [
+                ex.submit(
+                    _process_bscan_lite_worker,
+                    (fn, t, rpe_steps, ilm_steps, int(z)),
+                )
+                for t, z in zip(work, z_idx)
+            ]
+
+            for fut in as_completed(futs):
+                k, z, d = fut.result()
+
+                _save_npz(vol_out / f"z{z:04d}.npz", d)
+                slice_dicts.append((z, d))
+
+    slice_dicts.sort(key=lambda x: x[0])
+
+    stacked = collate_stackable(slice_dicts, STACK_KEYS)
+    np.savez_compressed(vol_out / f"{vol_id}_stacked.npz", **stacked)
+
+    return vol_out
+
 
 def batch_process_dir_lite(ALL_VOL_PATHS, rpe_steps,ilm_steps,
                            outputs_root,
@@ -214,13 +312,23 @@ def batch_process_dir_lite(ALL_VOL_PATHS, rpe_steps,ilm_steps,
     # ALL_VOL_PATHS = fu.get_all_vol_paths(volumes_root,pattern,)
     for vol_path in sorted(ALL_VOL_PATHS):
         print("Processing", vol_path.name, flush=True)
-        out = process_volume_lite(
+        # out = process_volume_lite(
+        #     vol_path, 
+        #     z_step=z_step, max_workers=max_workers,
+        #     rpe_steps=rpe_steps, ilm_steps=ilm_steps,out_dir=outputs_root,
+        #     annotation_root=annotation_root
+        # )
+
+        out = process_volume_lite_streaming(
             vol_path, 
             z_step=z_step, max_workers=max_workers,
             rpe_steps=rpe_steps, ilm_steps=ilm_steps,out_dir=outputs_root,
             annotation_root=annotation_root
         )
+
+
         print("saved ->", out)
+
 
     print("DONE. outputs_root =", outputs_root)
     return outputs_root

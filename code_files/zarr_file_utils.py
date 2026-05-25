@@ -161,7 +161,9 @@ def write_labels_group_to_zarr_streaming(
     zarr.consolidate_metadata(str(zarr_path))
     return zarr_path
 
-def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,layers_root: str ) -> Path:
+def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,layers_root: str,
+                    ez_outputs_root: str | Path | None = None,
+                        ) -> Path:
     """Create/reuse a labels Zarr from the *_layers.npz file aligned to vol_path.
     if supplied a labels_dir
     1/26/26: now accepting a zarr folder with subfoldersing during the refactorj
@@ -180,10 +182,27 @@ def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,layers_root
         vol_np = fu.load_ss_volume2(vol_path, z_step=1, y_step=1, x_step=1, mmap=True) #right, doesn't really load it
         H, W = vol_np.shape[1], vol_np.shape[2]
 
-        layers = np.load(layer_path)                      # (Z, W, n_layers) dict-like npz or array
-        layers = fu.downsample_layers(layers, (1, 1, 1))  # keep XY native for alignment
+        # layers = np.load(layer_path)                      # (Z, W, n_layers) dict-like npz or array
+        # layers = fu.downsample_layers(layers, (1, 1, 1))  # keep XY native for alignment
+        # vols = _build_label_set_vols(layers,H,1,z_stride=z_stride)
 
-        vols = _build_label_set_vols(layers,H,1,z_stride=z_stride)
+        # added 5/12/26
+        layers_npz = np.load(layer_path)
+        layers_npz = fu.downsample_layers(layers_npz, (1, 1, 1))
+        layers = {k: layers_npz[k] for k in layers_npz.files}
+
+        if ez_outputs_root is not None:
+            ez_path = Path(ez_outputs_root) / vol_path.stem / f"{vol_path.stem}_EZ_stacked.npz"
+
+            if ez_path.exists():
+                ez = np.load(ez_path)
+                layers["ez_path_original_coords"] = ez["ez_path_original_coords"]
+                layers["ez_present"] = ez["ez_present"].astype(bool)
+                print(f"[info] EZ layers info should be inserted into layers now")
+            else:
+                print(f"[info] EZ output not found for {vol_path.name}: {ez_path}")
+
+        vols = _build_label_set_vols(layers, H, 1, z_stride=z_stride)
 
         write_labels_group_to_zarr_streaming(vols, labels_zarr, chunks=(1, H, W))
 
@@ -249,6 +268,63 @@ def _build_slab_vol_from_curve(curve, image_height, offsets):
 
     return out
 
+def _build_ez_presence_band_vol(
+    ez_path,
+    ez_present,
+    image_height,
+    *,
+    band_height_px: int = 15,
+):
+    """
+    Build one label volume around EZ path.
+
+    Labels:
+      0 = background
+      1 = EZ absent  -> red in napari
+      2 = EZ present -> green in napari
+
+    ez_path:    (Z, W), row coordinate of DP EZ path
+    ez_present: (Z, W), bool/0-1 binary presence along path
+    """
+    ez_path = np.asarray(ez_path, dtype=np.float32)
+    ez_present = np.asarray(ez_present).astype(bool)
+
+    if ez_path.shape != ez_present.shape:
+        raise ValueError(
+            f"ez_path and ez_present must have same shape; "
+            f"got {ez_path.shape} and {ez_present.shape}"
+        )
+
+    Z, W = ez_path.shape
+    H = int(image_height)
+
+    out = np.zeros((Z, H, W), dtype=np.uint8)
+
+    above = int(band_height_px) // 2
+    below = int(band_height_px) - above - 1
+
+    x_all = np.arange(W, dtype=np.int32)
+
+    for z in range(Z):
+        row = ez_path[z]
+        present_row = ez_present[z]
+
+        valid = np.isfinite(row)
+        if not np.any(valid):
+            continue
+
+        x = x_all[valid]
+        y = np.rint(row[valid]).astype(np.int32)
+        present_x = present_row[valid]
+
+        y0 = np.clip(y - above, 0, H - 1)
+        y1 = np.clip(y + below, 0, H - 1)
+
+        for xi, lo, hi, is_present in zip(x, y0, y1, present_x):
+            out[z, lo:hi + 1, xi] = 2 if is_present else 1
+
+    return out
+
 def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1):
     LABEL_SETS = {
         'basics': [
@@ -259,7 +335,8 @@ def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1
             # example slab:
             # "rpe_smooth|10:20",
         ],
-        'ILM': ["ilm_raw", "ilm_smooth"],
+        'ILM_all': ["ilm_raw", "ilm_smooth"],
+        'ILM_smooth': ["ilm_smooth"],
         'two_layer_original': [
             'original_method_y1_vertical_shifted',
             'original_method_y2_vertical_shifted',
@@ -272,16 +349,28 @@ def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1
             'EZ_method_y1_vertical_shifted',
             'EZ_method_y2_vertical_shifted',
         ],
-        'all_methods_RPE': [
+
+        'RPE_only_original': [
             'original_method_y2_vertical_shifted',
+        ],
+        'RPE_only_choroidal': [
             'choroidal_method_y1_vertical_shifted',
+        ],
+        'RPE_only_EZ': [
             'EZ_method_y2_vertical_shifted',
         ],
 
+        # 'all_methods_RPE': [
+        #     'original_method_y2_vertical_shifted',
+        #     'choroidal_method_y1_vertical_shifted',
+        #     'EZ_method_y2_vertical_shifted',
+        # ],
+
         # cleaner usage as separate toggleable sets:
         'rpe_slab_10_20_original': ['original_method_y2_vertical_shifted|10:20'],
-        'rpe_slab_10_20_EZ': ['EZ_method_y2_vertical_shifted|10:20'],
-        'rpe_slab_10_20_choroidal': ['choroidal_method_y1_vertical_shifted|10:20'],
+        'rpe_slab_20_40_original': ['original_method_y2_vertical_shifted|20:40'],
+        # 'rpe_slab_10_20_EZ': ['EZ_method_y2_vertical_shifted|10:20'],
+        # 'rpe_slab_10_20_choroidal': ['choroidal_method_y1_vertical_shifted|10:20'],
     }
 
     class _LayerShim:
@@ -344,6 +433,26 @@ def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1
 
         out_dtype = np.uint8 if (label_idx - 1) <= 255 else np.uint16
         vols[set_name] = vol.astype(out_dtype, copy=False)
+
+    
+    # Optional EZ binary presence band.
+    # Expected keys come from run_ellipsoid_zone_on_volume.py output.
+    if (
+        "ez_path_original_coords" in layer_shim._d
+        and "ez_present" in layer_shim._d
+    ):
+        ez_band = _build_ez_presence_band_vol(
+            layer_shim["ez_path_original_coords"],
+            layer_shim["ez_present"],
+            image_height=image_height,
+            band_height_px=15,
+        )
+
+        if z_stride > 1:
+            ez_band = ez_band[::z_stride]
+
+        vols["EZ_presence_band"] = ez_band.astype(np.uint8, copy=False)
+        print(f"believe we have added the EZ info to the vols")
 
     return vols
 
@@ -790,6 +899,7 @@ def ensure_nonflat_artifacts(
     *,
     layers_root: str | Path,
     annotation_root: str | Path | None = None,
+    ez_outputs_root: str | Path | None = None,
     z_stride: int = 1,
     overwrite: bool = False,
     make_image_zarr: bool = True,
@@ -812,7 +922,6 @@ def ensure_nonflat_artifacts(
       * z-stride is handled later at load time, not in the cached annotation path
     """
     vol_path = Path(vol_path)
-    layers_root = Path(layers_root)
 
     if annotation_root is None:
         annotation_root = Path(fu.C["annotation_root"])
@@ -830,10 +939,11 @@ def ensure_nonflat_artifacts(
         out["image_zarr"] = ensure_image_zarr(
             vol_path,
             z_stride=z_stride,
-            overwrite=False, # Hard set, will likely want to change later
+            overwrite=False,
         )
 
     if make_label_zarr:
+        layers_root = Path(layers_root)
         layer_path = fu.new_get_corresponding_layer_path(vol_path, layers_root=layers_root)
         if not layer_path.exists():
             raise FileNotFoundError(f"Layer file not found for {vol_path}: {layer_path}")
@@ -843,6 +953,7 @@ def ensure_nonflat_artifacts(
             z_stride=z_stride,
             overwrite=overwrite,
             layers_root=layers_root,
+            ez_outputs_root=ez_outputs_root,
         )
 
     if make_annotation_zarr:

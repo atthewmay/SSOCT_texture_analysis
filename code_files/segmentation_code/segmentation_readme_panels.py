@@ -94,7 +94,8 @@ def save_one_panel_png(
     # Figure aspect matches image aspect; this avoids unnecessary padding.
     h, w = arr.shape[:2]
     fig_w = 6.0
-    fig_h = max(0.5, fig_w * h / max(w, 1))
+    # fig_h = max(0.5, fig_w * h / max(w, 1))
+    fig_h = 6.0
 
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi, frameon=False)
     ax = fig.add_axes([0, 0, 1, 1])
@@ -199,13 +200,13 @@ def default_segmentation_readme_panels() -> list[ReadmePanel]:
             slug="07_lowres_dp_cost",
             title="Low-resolution DP cost",
             description=(
-                "`step_rpe_DP_on_enh_2` runs a globally optimized dynamic-programming path through the enhanced image."
+                "`step_rpe_DP_on_enh_2` runs a globally optimized dynamic-programming path through the enhanced image. Cost is increased near ILM line."
             ),
             source_functions=("ssf.step_rpe_DP_on_enh_2",),
             get_array=lambda ilm, rpe: _get(rpe, "rpe_enh_DP_cost_raw")
             if _get(rpe, "rpe_enh_DP_cost_raw") is not None
             else _get(rpe, "guided_cost_raw"),
-            get_lines=lambda ilm, rpe: _line_dict(rpe_smooth=_get(rpe, "rpe_smooth")),
+            # get_lines=lambda ilm, rpe: _line_dict(rpe_smooth=_get(rpe, "rpe_smooth")),
         ),
         ReadmePanel(
             slug="08_lowres_rpe_on_raw",

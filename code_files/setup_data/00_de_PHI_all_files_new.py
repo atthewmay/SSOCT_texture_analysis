@@ -38,8 +38,18 @@ def append_new_mappings(master_csv, new_rows):
 
     master_path = Path(master_csv)
     file_exists = master_path.exists()
+    file_nonempty = file_exists and master_path.stat().st_size > 0
 
     master_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+    # If appending to an existing nonempty file, ensure it ends with newline.
+    if file_nonempty:
+        with open(master_path, "rb+") as f:
+            f.seek(-1, 2)
+            last_char = f.read(1)
+            if last_char not in (b"\n", b"\r"):
+                f.write(b"\n")
 
     with open(master_path, "a", newline="") as f:
         fieldnames = ["integer_id", "MRN", "date", "category"]
@@ -112,7 +122,7 @@ def anonymize(root_dir, output_csv, master_csv,central_image_dir):
             # NOW WE COPY THE FILES AFTER RENAMING
             patient_path = os.path.join(cat_path,patient)
             for file in os.listdir(patient_path):
-                if not "cube_z" in str(file):
+                if not ("cube_z" in str(file) and "1024x1024" in str(file) and "_Cube" in str(file)):
                     continue
                 f_name = os.path.basename(file)
                 fp = os.path.join(patient_path,file)

@@ -3885,3 +3885,16 @@ def step_ilm_endpoint_plot(ctx: ILMContext) -> ILMContext:
     # raise Exception("endpoint plotting complete. Terminating here!")
     return ctx
     #ef step_ILM_terminal_plot
+
+#### README Stuff
+def step_rpe_export_readme_panels(ctx: RPEContext) -> RPEContext:
+    from code_files.segmentation_code.segmentation_readme_panels import (
+        save_segmentation_readme_panels,
+    )
+    save_segmentation_readme_panels(
+        ctx_ilm=ctx.ilm_ctx,
+        ctx_rpe=ctx,
+        out_dir="./docs/segmentation/readme_panels/",
+        prefix="seg",
+    )
+    return ctx
