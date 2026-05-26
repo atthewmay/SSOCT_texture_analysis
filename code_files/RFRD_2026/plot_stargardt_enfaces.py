@@ -20,7 +20,7 @@ VOL_ROOT = Path("/Volumes/T9/iowa_research/Han_stargardt_2026/data_volumes")
 LAYERS_ROOT = Path("/Volumes/T9/iowa_research/Han_stargardt_2026/layers_5_12")
 OUT_ROOT = Path("/Volumes/T9/iowa_research/Han_stargardt_2026/enface_maps/")
 
-SLAB_OFFSETS = ((10, 20),)
+SLAB_OFFSETS = ((-30,-10),(-10,10),(0, 10),(10, 20),(20,40),(0,50),(0,100))
 GLOB = "*.img"
 OVERWRITE_FLAT = False
 

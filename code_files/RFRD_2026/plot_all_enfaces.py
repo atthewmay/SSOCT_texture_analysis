@@ -17,6 +17,7 @@ sys.path.append(str(ROOT))
 import code_files.ARVO_2026.ArvoFigures2026 as F
 from code_files import file_utils as fu
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 SLAB_KEY = "slab_mean|10->20"
 
@@ -47,7 +48,7 @@ def load_eye(integer_id, eye, volume_dir, enface_root):
     }
 
 
-def save_pair(od, os, out_fp, dpi=220, gap_px=4, square_each=False):
+def save_pair(od, os, out_fp, dpi=220, gap_px=8, square_each=False):
     od = np.asarray(od, dtype=np.float32)
     os = np.asarray(os, dtype=np.float32)
 
@@ -72,13 +73,46 @@ def save_pair(od, os, out_fp, dpi=220, gap_px=4, square_each=False):
     ax2 = fig.add_axes([od_w_frac + gap_w_frac, 0, os_w_frac, 1])
 
     for ax, im in [(ax1, od), (ax2, os)]:
-        ax.imshow(im, cmap="gray", vmin=0, vmax=65535, aspect="auto")
+        ax.imshow(im, cmap="gray",  aspect="auto")
         ax.axis("off")
 
     out_fp = Path(out_fp)
     out_fp.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_fp, pad_inches=0, facecolor="black")
     plt.close(fig)
+
+
+def process_one(row, volume_dir, enface_root, output_root, dpi, gap_px):
+    integer_id = int(row["integer_id"])
+    cat = cat_name(row["category"])
+
+    try:
+        od = load_eye(integer_id, "OD", volume_dir, enface_root)
+        os = load_eye(integer_id, "OS", volume_dir, enface_root)
+    except Exception as e:
+        return f"skip {integer_id}: {e}"
+
+    stem = f"{cat}__{integer_id}__OD_OS"
+
+    save_pair(
+        od["full_y"],
+        os["full_y"],
+        Path(output_root) / cat / "full_mean_y" / f"{stem}__full_mean_y.png",
+        dpi=dpi,
+        gap_px=gap_px,
+        square_each=True,
+    )
+
+    save_pair(
+        od["slab"],
+        os["slab"],
+        Path(output_root) / cat / "slab_mean_10_to_20" / f"{stem}__slab_mean_10_to_20.png",
+        dpi=dpi,
+        gap_px=gap_px,
+        square_each=False,
+    )
+
+    return f"saved {integer_id} -> {cat}"
 
 
 def main():
@@ -98,38 +132,27 @@ def main():
         print(f"using split = {args.split}")
         df = df[df["split"].astype(str).str.lower() == args.split.lower()]
 
-    for _, r in df.drop_duplicates("integer_id").iterrows():
-        integer_id = int(r["integer_id"])
-        cat = cat_name(r["category"])
+    rows = [
+        r.to_dict()
+        for _, r in df.drop_duplicates("integer_id").iterrows()
+    ]
 
-        try:
-            od = load_eye(integer_id, "OD", args.volume_dir, args.enface_root)
-            os = load_eye(integer_id, "OS", args.volume_dir, args.enface_root)
-        except Exception as e:
-            print(f"skip {integer_id}: {e}")
-            continue
+    with ProcessPoolExecutor(max_workers=6) as ex:
+        futures = [
+            ex.submit(
+                process_one,
+                r,
+                args.volume_dir,
+                args.enface_root,
+                args.output_root,
+                args.dpi,
+                args.gap_px,
+            )
+            for r in rows
+        ]
 
-        stem = f"{cat}__{integer_id}__OD_OS"
-
-        save_pair(
-            od["full_y"],
-            os["full_y"],
-            Path(args.output_root) / cat / "full_mean_y" / f"{stem}__full_mean_y.png",
-            dpi=args.dpi,
-            gap_px=args.gap_px,
-            square_each=True,
-        )
-
-        save_pair(
-            od["slab"],
-            os["slab"],
-            Path(args.output_root) / cat / "slab_mean_10_to_20" / f"{stem}__slab_mean_10_to_20.png",
-            dpi=args.dpi,
-            gap_px=args.gap_px,
-            square_each=True,
-        )
-
-        print(f"saved {integer_id} -> {cat}")
+        for fut in as_completed(futures):
+            print(fut.result())
 
 
 if __name__ == "__main__":

@@ -67,7 +67,10 @@ def load_panels(image_dir, layers_root, z0, z1, n_panels):
 
     import re
     seen_ids = set()
-    for img_fp in sorted(Path(image_dir).glob("*.img"))[:n_panels]:
+    count = 0
+    for img_fp in sorted(Path(image_dir).glob("*.img")):
+        if count >= n_panels:
+            break
         try:
             # vol = np.load(img_fp, mmap_mode="r")[IMG_KEY]
             integer_id = int(re.search(r'(\d+)_Cube', str(img_fp)).group(1))
@@ -98,6 +101,7 @@ def load_panels(image_dir, layers_root, z0, z1, n_panels):
             print(f"  vol shape: {vol.shape} dtype: {vol.dtype}")
             print(f"  sample min/max: {np.nanmin(sample)} {np.nanmax(sample)}")
             print(f"  display lo/hi: {lo} {hi}")
+            count += 1 
         except:
             print(f"unable to process {img_fp.name}")
 
@@ -112,13 +116,14 @@ def main():
 
     ap.add_argument("--z0", type=int, default=300)
     ap.add_argument("--z1", type=int, default=500)
+    ap.add_argument("--z_step", type=int, default=1)
 
     ap.add_argument("--cols", type=int, default=6)
     ap.add_argument("--rows", type=int, default=4)
     ap.add_argument("--tile", type=int, default=220)
     ap.add_argument("--gap", type=int, default=2)
     ap.add_argument("--fps", type=int, default=8)
-    ap.add_argument("--line_px", type=int, default=2)
+    ap.add_argument("--line_px", type=int, default=1)
 
     args = ap.parse_args()
 
@@ -138,7 +143,7 @@ def main():
     H = args.rows * args.tile + (args.rows - 1) * args.gap
 
     with imageio.get_writer(out, mode="I", duration=1 / args.fps, loop=0) as writer:
-        for z in range(args.z0, args.z1):
+        for z in range(args.z0, args.z1, args.z_step):
             canvas = Image.new("RGB", (W, H), (0, 0, 0))
 
             for i, (_, vol, layers, rpe_key, lo, hi) in enumerate(panels):
