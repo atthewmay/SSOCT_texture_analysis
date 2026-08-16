@@ -163,6 +163,7 @@ def write_labels_group_to_zarr_streaming(
 
 def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,layers_root: str,
                     ez_outputs_root: str | Path | None = None,
+                        label_sets: list[str] | None = None,
                         ) -> Path:
     """Create/reuse a labels Zarr from the *_layers.npz file aligned to vol_path.
     if supplied a labels_dir
@@ -202,7 +203,7 @@ def ensure_labels_zarr(vol_path: Path, z_stride: int,overwrite: bool,layers_root
             else:
                 print(f"[info] EZ output not found for {vol_path.name}: {ez_path}")
 
-        vols = _build_label_set_vols(layers, H, 1, z_stride=z_stride)
+        vols = _build_label_set_vols(layers, H, 1, z_stride=z_stride,label_sets=label_sets)
 
         write_labels_group_to_zarr_streaming(vols, labels_zarr, chunks=(1, H, W))
 
@@ -325,7 +326,8 @@ def _build_ez_presence_band_vol(
 
     return out
 
-def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1):
+def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1,
+                              label_sets=None):
     LABEL_SETS = {
         'basics': [
             "hypersmoother_path",
@@ -373,6 +375,23 @@ def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1
         # 'rpe_slab_10_20_choroidal': ['choroidal_method_y1_vertical_shifted|10:20'],
     }
 
+    if label_sets is None:
+        selected_label_sets = LABEL_SETS
+    else:
+        requested = set(label_sets)
+        unknown = requested - LABEL_SETS.keys()
+        if unknown:
+            raise ValueError(
+                f"Unknown label sets: {sorted(unknown)}. "
+                f"Available sets: {sorted(LABEL_SETS)}"
+            )
+
+        selected_label_sets = {
+            name: specs
+            for name, specs in LABEL_SETS.items()
+            if name in requested
+        }
+
     class _LayerShim:
         def __init__(self, d):
             self._d = d
@@ -392,7 +411,7 @@ def _build_label_set_vols(layers, image_height, vert_dilation_size=1, z_stride=1
     H = int(image_height)
 
     vols = {}
-    for set_name, specs in LABEL_SETS.items():
+    for set_name, specs in selected_label_sets.items():
         vol = np.zeros((Z, H, W), dtype=np.uint16)
         label_idx = 1
 
@@ -900,6 +919,7 @@ def ensure_nonflat_artifacts(
     layers_root: str | Path,
     annotation_root: str | Path | None = None,
     ez_outputs_root: str | Path | None = None,
+    label_sets: list[str] | None = None,
     z_stride: int = 1,
     overwrite: bool = False,
     make_image_zarr: bool = True,
@@ -940,6 +960,7 @@ def ensure_nonflat_artifacts(
             vol_path,
             z_stride=z_stride,
             overwrite=False,
+
         )
 
     if make_label_zarr:
@@ -954,6 +975,7 @@ def ensure_nonflat_artifacts(
             overwrite=overwrite,
             layers_root=layers_root,
             ez_outputs_root=ez_outputs_root,
+            label_sets=label_sets,
         )
 
     if make_annotation_zarr:

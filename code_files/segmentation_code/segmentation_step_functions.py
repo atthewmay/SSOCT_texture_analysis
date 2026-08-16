@@ -23,6 +23,8 @@ C = fu.load_constants()
 from joblib import Parallel,delayed
 
 from textwrap import fill
+from code_files.segmentation_code.ctx_artifacts_utils import RPEArtifacts,EZTwoLayerPrepArtifacts
+from code_files.segmentation_code.hypersmoothing_utils_8_14_26 import step_rpe_hypersmoother_8_5_26
 
 
 @dataclass(frozen=True)
@@ -267,6 +269,11 @@ class RPEContext:
     original_image: np.ndarray
     ONH_region: Any
     cfg: RPEConfig
+
+    artifacts: RPEArtifacts = field(
+        default_factory=RPEArtifacts
+    )
+
     ID: Optional[str] = None
     highres_cfg: Optional[HighResConfig] = None
     highres_ctx: Optional[HighResContext] = None
@@ -771,6 +778,7 @@ def step_rpe_hypersmoother_3_7_26(ctx: RPEContext,DEBUG_THIS_FUNCTION=False) -> 
  
 
     # raise Exception("done with plotting")
+
  
 # def step_rpe_hypersmoother_3_7_26(ctx: RPEContext) -> RPEContext:
 #     """run the big coarse smoother as inital preprocess. if using this you have to unsmooth at the end, which is why we store the hypersmooth line. We also adjust the ilm line"""
@@ -2315,16 +2323,59 @@ def step_rpe_EZ_egs_two_layer_prep_DEBUG(ctx: RPEContext):
     raise Exception('done')
 
   
-def _rpe_EZ_egs_two_layer_prep(ctx: RPEContext,num_gradients=1):
-    """distilled from the above. Option to repeat gradients (better separate choroidal junk)"""
-    _, diff_up_down, _, _ = suf.diff_boundary_enhance_and_blur_horiz(
-        ctx.img,
+# def _rpe_EZ_egs_two_layer_prep(ctx: RPEContext,num_gradients=1):
+#     """distilled from the above. Option to repeat gradients (better separate choroidal junk)"""
+#     _, diff_up_down, _, _ = suf.diff_boundary_enhance_and_blur_horiz(
+#         ctx.img, # This was very sloppy. appears to be the ctx.img = ctx.highres_smoothed_img. Would make sense.
+#         # IN_REFACTOR: must correct the ctx.img to the actual named stored image for clarity. 
+#         down_hblur=40,
+#         up_hblur=40,
+#         down_vertical_kernel_size=25,
+#         up_vertical_kernel_size=25,
+#     )
+
+
+#     diff_up_down_tubed = suf.apply_gaussian_tube_mul(
+#         diff_up_down,
+#         ctx.flat_rpe_smooth,
+#         sigma=ctx.highres_cfg.tube_sigma,
+#         gain=1,
+#         hard_window=ctx.highres_cfg.tube_hard_window,
+#     )
+#     grad_img = diff_up_down_tubed
+
+#     grad_img_list = []
+#     for i in range(num_gradients):
+#         grad_img = suf._normalized_axial_gradient(
+#             grad_img,
+#             vertical_kernel_size=4,
+#             dark2bright=False,
+#         )
+#         if hasattr(ctx,'VERBOSE_STORAGE') and ctx.VERBOSE_STORAGE == True:
+#             grad_img_list.append(grad_img)
+
+#     input_img = grad_img
+#     # IN_REFACTOR: Would add full output for debugging, depending on if ctx has VERBOSE_STORAGE=True -- should include boht the input_img, along with each stage of grad_img (stored if debugging), and the outputs of 
+#     # Diff_boundary_enhance_and_blur_horiz
+#     if hasattr(ctx,'VERBOSE_STORAGE') and ctx.VERBOSE_STORAGE == True:
+#     return input_img # may add more debug output latyer
+
+def _rpe_EZ_egs_two_layer_prep(
+    ctx: RPEContext,
+    num_gradients: int = 1,
+    ) -> np.ndarray:
+    (
+        diff_down_up,
+        diff_up_down,
+        hblur_down,
+        hblur_up,
+    ) = suf.diff_boundary_enhance_and_blur_horiz(
+        ctx.highres_smoothed_img,
         down_hblur=40,
         up_hblur=40,
         down_vertical_kernel_size=25,
         up_vertical_kernel_size=25,
     )
-
 
     diff_up_down_tubed = suf.apply_gaussian_tube_mul(
         diff_up_down,
@@ -2333,16 +2384,36 @@ def _rpe_EZ_egs_two_layer_prep(ctx: RPEContext,num_gradients=1):
         gain=1,
         hard_window=ctx.highres_cfg.tube_hard_window,
     )
-    grad_img = diff_up_down_tubed
 
-    for i in range(num_gradients):
+    grad_img = diff_up_down_tubed
+    gradient_stages = []
+
+    for _ in range(num_gradients):
         grad_img = suf._normalized_axial_gradient(
             grad_img,
             vertical_kernel_size=4,
             dark2bright=False,
         )
+
+        if ctx.artifacts.store_full:
+            gradient_stages.append(grad_img)
+
     input_img = grad_img
-    return input_img # may add more debug output latyer
+
+    if ctx.artifacts.store_full:
+        ctx.artifacts.ez_two_layer_prep = (
+            EZTwoLayerPrepArtifacts(
+                diff_down_up=diff_down_up,
+                diff_up_down=diff_up_down,
+                hblur_down=hblur_down,
+                hblur_up=hblur_up,
+                diff_up_down_tubed=diff_up_down_tubed,
+                gradient_stages=gradient_stages,
+                input_img=input_img,
+            )
+        )
+
+    return input_img
 
 
 
@@ -3789,7 +3860,7 @@ def step_ilm_DP_refiner(ctx: ILMContext) -> ILMContext:
     cost = 1 - ctx.DP_refining_tube
     cost = suf.modify_cost_with_ONH_info(cost,ctx.ONH_region,ONH_value_factor=0.5)
     DP_path,_ = suf.run_DP_on_cost_matrix(cost,max_step=3,lambda_step=lambda_step,ONH_region=ctx.ONH_region,lambda_step_in_ONH_region=0.001)
-    ctx.ilm_smooth = DP_path
+    ctx.ilm_smooth = DP_path # note that ILM_smooth is a misnomer. Should be iLM_final or something. 
     return ctx
 
 
@@ -3887,14 +3958,29 @@ def step_ilm_endpoint_plot(ctx: ILMContext) -> ILMContext:
     #ef step_ILM_terminal_plot
 
 #### README Stuff
-def step_rpe_export_readme_panels(ctx: RPEContext) -> RPEContext:
+# def step_rpe_export_readme_panels(ctx: RPEContext) -> RPEContext:
+#     from code_files.segmentation_code.segmentation_readme_panels import (
+#         save_segmentation_readme_panels,
+#     )
+#     save_segmentation_readme_panels(
+#         ctx_ilm=ctx.ilm_ctx,
+#         ctx_rpe=ctx,
+#         out_dir="./docs/segmentation/readme_panels/",
+#         prefix="seg",
+#     )
+#     return ctx
+
+def step_rpe_export_readme_panels(ctx):
+    """Optional RPE pipeline step: save README panels at the end of a debug run."""
     from code_files.segmentation_code.segmentation_readme_panels import (
         save_segmentation_readme_panels,
     )
+    out_dir="/Volumes/T9/iowa_research/Han_AIR_Dec_2025/results/extra_rpe_segmentation_panels/"
     save_segmentation_readme_panels(
         ctx_ilm=ctx.ilm_ctx,
         ctx_rpe=ctx,
-        out_dir="./docs/segmentation/readme_panels/",
-        prefix="seg",
+        out_dir=out_dir,
+        prefix="demo_segmentations",
+        final_rpe_pathway="original",
     )
     return ctx

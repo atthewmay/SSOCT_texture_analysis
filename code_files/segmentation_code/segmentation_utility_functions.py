@@ -828,7 +828,7 @@ class peakSuppressor(object):
                     yline[c] = float(top)
                 else:
                     # pick the "next peak" in depth order
-                    yline[c] = float(ps[1])
+                    yline[c] = float(ps[1]) # this was unexpected behavior. 
 
             else:
                 raise ValueError(f"unknown mode: {mode}")
@@ -1581,7 +1581,8 @@ def rpe_hypersmoother_DP_3_7_26(
     cost = -coarse
 
     if ONH_info is not None:
-        dscale_factor = ONH_info.shape[1]/coarse.shape[1] # Should be integer really
+        # Changing to integer
+        dscale_factor = round(ONH_info.shape[1]/coarse.shape[1]) # Should be integer really
         ONH_info = ONH_info[::dscale_factor,::dscale_factor]
         cost = modify_cost_with_ONH_info(
             cost,

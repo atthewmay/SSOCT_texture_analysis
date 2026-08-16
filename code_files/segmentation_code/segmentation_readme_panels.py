@@ -1,5 +1,5 @@
 from __future__ import annotations
-#Reviewed
+# Reviewed
 
 """
 Export segmentation debug panels as individual cropped PNGs.
@@ -19,6 +19,7 @@ Typical use inside a segmentation endpoint/debug step:
         ctx_rpe=ctx,
         out_dir="docs/assets/segmentation_panels/example",
         prefix=ctx.ID,
+        final_rpe_pathway="original",  # original, choroidal, or EZ
     )
 
 The saved PNGs have no axes, titles, borders, or whitespace. The text belongs
@@ -35,6 +36,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import code_files.segmentation_code.segmentation_plot_utils as spu
+import code_files.segmentation_code.segmentation_utility_functions as suf
 
 
 ArrayGetter = Callable[[object, object], Optional[np.ndarray]]
@@ -91,7 +93,7 @@ def save_one_panel_png(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Figure aspect matches image aspect; this avoids unnecessary padding.
+    # Keep the existing square-panel export behavior.
     h, w = arr.shape[:2]
     fig_w = 6.0
     # fig_h = max(0.5, fig_w * h / max(w, 1))
@@ -109,10 +111,20 @@ def save_one_panel_png(
         if line.ndim != 1:
             continue
 
+        if name not in spu.LAYER_STYLE:
+            print(f"Couldn't find name {name} in spu.LAYER_STYLE dictionary, falling bak to default I think")
+        else:
+            print(f"did find name {name} in spu.LAYER_STYLE dictionary")
         style = spu.LAYER_STYLE.get(name, None)
         x = np.arange(line.shape[0])
         if style is not None:
-            ax.plot(x, line, style.get("fmt", "-"), lw=line_width, alpha=style.get("alpha", 0.9))
+            ax.plot(
+                x,
+                line,
+                style.get("fmt", "-"),
+                lw=style.get("lw",line_width),
+                alpha=style.get("alpha", 0.9),
+            )
         else:
             ax.plot(x, line, lw=line_width, alpha=0.9)
 
@@ -127,8 +139,166 @@ def save_one_panel_png(
     plt.close(fig)
 
 
-def default_segmentation_readme_panels() -> list[ReadmePanel]:
+# -----------------------------
+# RPE peak-overlay helpers
+# -----------------------------
+
+def _rpe_peak_suppression_debug(ctx_rpe):
+    """Recreate the peaks detected on the image entering RPE peak suppression.
+
+    This mirrors the peak-detection defaults inside
+    ``suf.peakSuppressor.peak_suppression_pipeline``. The exporter runs after
+    ``step_rpe_unsmooth``, so the correctly flattened/downsampled ILM guide is
+    recovered from the context history as ``flat_ilm_seg``.
+    """
+    enh = _get(ctx_rpe, "enh")
+    if enh is None:
+        enh = _get(ctx_rpe, "enh_f")
+    if enh is None:
+        return None
+
+    enh = np.asarray(enh)
+    ilm_line = _get(ctx_rpe, "flat_ilm_seg")
+    if ilm_line is not None:
+        ilm_line = np.asarray(ilm_line, dtype=float)
+        if ilm_line.shape != (enh.shape[1],):
+            # Do not guess a coordinate transform here. A mismatched line is
+            # safer to omit than to overlay/use in the wrong image space.
+            ilm_line = None
+
+    _, peaks, _ = suf.peakSuppressor.extract_smoothed_and_peaks(
+        enh,
+        sigma=2.0,
+        peak_prominence=0.02,
+        peak_distance=20,
+        ilm_line=ilm_line,
+        min_offset=-15,
+    )
+    return peaks
+
+
+def _rpe_peak_overlay(ctx_rpe):
+    """Overlay pre-suppression RPE peak detections in red on the filtered image."""
+    enh = _get(ctx_rpe, "enh")
+    if enh is None:
+        enh = _get(ctx_rpe, "enh_f")
+    if enh is None:
+        return None
+
+    peaks = _rpe_peak_suppression_debug(ctx_rpe)
+    if peaks is None:
+        return enh
+    return spu.overlay_peaks_on_image(enh, peaks)
+
+
+# -----------------------------
+# High-resolution gradient panel helpers
+# -----------------------------
+
+def _ensure_highres_gradient_images(ctx_rpe):
+    """Return the high-resolution differential and its two blurred components.
+
+    ``step_rpe_highres_diff_enh`` currently stores ``diff_down_up`` but leaves
+    ``hblur_down`` and ``hblur_up`` as local variables. For README/paper export,
+    reuse stored component images when available; otherwise reproduce the exact
+    utility call on ``highres_smoothed_img`` and cache the components on
+    ``highres_ctx``.
+    """
+    highres_ctx = _get(ctx_rpe, "highres_ctx")
+    if highres_ctx is None:
+        return None, None, None
+
+    diff_down_up = _get(ctx_rpe, "highres_ctx.diff_down_up")
+    hblur_down = _get(ctx_rpe, "highres_ctx.hblur_down")
+    hblur_up = _get(ctx_rpe, "highres_ctx.hblur_up")
+    if diff_down_up is not None and hblur_down is not None and hblur_up is not None:
+        return diff_down_up, hblur_down, hblur_up
+
+    img = _get(ctx_rpe, "highres_smoothed_img")
+    if img is None:
+        return diff_down_up, hblur_down, hblur_up
+
+    def cfg_value(name, default):
+        value = _get(ctx_rpe, f"highres_cfg.{name}")
+        return default if value is None else value
+
+    calculated_diff, _, calculated_hblur_down, calculated_hblur_up = (
+        suf.diff_boundary_enhance_and_blur_horiz(
+            img,
+            down_hblur=cfg_value("down_hblur", 40),
+            up_hblur=cfg_value("up_hblur", 50),
+            down_vertical_kernel_size=cfg_value("down_vertical_kernel_size", 25),
+            up_vertical_kernel_size=cfg_value("up_vertical_kernel_size", 15),
+        )
+    )
+
+    if diff_down_up is None:
+        diff_down_up = calculated_diff
+    if hblur_down is None:
+        hblur_down = calculated_hblur_down
+        setattr(highres_ctx, "hblur_down", hblur_down)
+    if hblur_up is None:
+        hblur_up = calculated_hblur_up
+        setattr(highres_ctx, "hblur_up", hblur_up)
+
+    return diff_down_up, hblur_down, hblur_up
+
+
+def _highres_diff_down_up(ctx_rpe):
+    return _ensure_highres_gradient_images(ctx_rpe)[0]
+
+
+def _highres_hblur_down(ctx_rpe):
+    return _ensure_highres_gradient_images(ctx_rpe)[1]
+
+
+def _highres_hblur_up(ctx_rpe):
+    return _ensure_highres_gradient_images(ctx_rpe)[2]
+
+
+# -----------------------------
+# Final-path selection helper
+# -----------------------------
+
+def _normalize_final_rpe_pathway(pathway: str) -> str:
+    key = str(pathway).strip().lower()
+    aliases = {
+        "original": "original",
+        "choroidal": "choroidal",
+        "ez": "EZ",
+    }
+    if key not in aliases:
+        raise ValueError(
+            "final_rpe_pathway must be one of: 'original', 'choroidal', or 'EZ'"
+        )
+    return aliases[key]
+
+
+def _selected_final_rpe_line(ctx_rpe, pathway: str):
+    """Return the final vertically shifted line for one selected RPE pathway."""
+    pathway = _normalize_final_rpe_pathway(pathway)
+
+    if pathway == "original":
+        shifted = _get(ctx_rpe, "two_layer_dp_ctx.y2_vertical_shifted")
+        assert shifted is not None
+        return shifted # if shifted is not None else _get(ctx_rpe, "two_layer_dp_ctx.y2_rescaled")
+
+    if pathway == "choroidal":
+        shifted = _get(ctx_rpe, "two_layer_dp_ctx_choroidal.y1_vertical_shifted")
+        assert shifted is not None
+        return shifted # if shifted is not None else _get(ctx_rpe, "two_layer_dp_ctx_choroidal.y1_rescaled")
+
+    shifted = _get(ctx_rpe, "two_layer_dp_ctx_EZ.y2_vertical_shifted")
+    assert shifted is not None
+    return shifted # if shifted is not None else _get(ctx_rpe, "two_layer_dp_ctx_EZ.y2_rescaled")
+
+
+def default_segmentation_readme_panels(
+    final_rpe_pathway: str = "original",
+) -> list[ReadmePanel]:
     """Panels matching the current unified RPE pipeline narrative."""
+    final_rpe_pathway = _normalize_final_rpe_pathway(final_rpe_pathway)
+
     return [
         ReadmePanel(
             slug="01_raw_bscan",
@@ -157,13 +327,16 @@ def default_segmentation_readme_panels() -> list[ReadmePanel]:
         ),
         ReadmePanel(
             slug="03_coarse_hypersmoothed_image",
-            title="Coarse hypersmoother image",
+            title="Coarse hypersmoother image and DP guide",
             description=(
-                "The low-resolution image/cost surface used for the coarse guide. "
-                "This is useful for explaining why the guide prefers the broad RPE/choroid complex."
+                "The low-resolution image/cost surface used for the coarse guide, with the DP path "
+                "shown directly in the same coarse coordinate space."
             ),
             source_functions=("ssf.step_rpe_hypersmoother_3_7_26",),
             get_array=lambda ilm, rpe: _get(rpe, "hypersmoother_params.coarse_hypersmoothed_img"),
+            get_lines=lambda ilm, rpe: _line_dict(
+                hypersmoothed=_get(rpe, "hypersmoother_params.hypersmoother_y_dp"),
+            ),
         ),
         ReadmePanel(
             slug="04_flattened_to_hypersmoother",
@@ -187,106 +360,201 @@ def default_segmentation_readme_panels() -> list[ReadmePanel]:
         ),
         ReadmePanel(
             slug="06_boundary_enhancement",
-            title="Boundary enhancement",
+            title="Filtered axial-gradient image",
             description=(
-                "`step_rpe_compute_enhancement2` builds an image that emphasizes the relevant axial transition "
-                "near the RPE complex. Computes axial graident, blurs, and then suppresses peaks below the top (most anteriorly oriented) "
-                "2 peaks to reduce choroidal signal."
+                "`step_rpe_compute_enhancement2` emphasizes the relevant axial transition near the RPE complex. "
+                "This is the filtered gradient image before column-wise peak suppression."
             ),
-            source_functions=("ssf.step_rpe_compute_enhancement2","suf.peakSuppressor"),
-            get_array=lambda ilm, rpe: _get(rpe, "enh_f") if _get(rpe, "enh_f") is not None else _get(rpe, "enh"),
+            source_functions=("ssf.step_rpe_compute_enhancement2", "suf._boundary_enhance"),
+            get_array=lambda ilm, rpe: _get(rpe, "enh")
+            if _get(rpe, "enh") is not None
+            else _get(rpe, "enh_f"),
         ),
         ReadmePanel(
-            slug="07_lowres_dp_cost",
-            title="Low-resolution DP cost",
+            slug="07_peak_detection_pre_suppression",
+            title="Detected peaks before RPE suppression",
             description=(
-                "`step_rpe_DP_on_enh_2` runs a globally optimized dynamic-programming path through the enhanced image. Cost is increased near ILM line."
+                "Column-wise peaks are recreated with the same settings used by "
+                "`step_rpe_compute_enhancement2` and are overlaid in red on the incoming filtered "
+                "gradient image. These are the candidate peaks evaluated by the subsequent suppression step."
             ),
-            source_functions=("ssf.step_rpe_DP_on_enh_2",),
-            get_array=lambda ilm, rpe: _get(rpe, "rpe_enh_DP_cost_raw")
+            source_functions=(
+                "ssf.step_rpe_compute_enhancement2",
+                "suf.peakSuppressor.extract_smoothed_and_peaks",
+                "spu.overlay_peaks_on_image",
+            ),
+            get_array=lambda ilm, rpe: _rpe_peak_overlay(rpe),
+        ),
+        ReadmePanel(
+            slug="08_peak_suppressed_gradient",
+            title="Peak-suppressed axial-gradient image",
+            description=(
+                "The detected peaks are used to attenuate deeper choroidal and scleral signal. "
+                "When at least three peaks are present and the third shallowest peak is weaker than "
+                "the first two, signal at and below the intervening valley is multiplied by the "
+                "configured suppression factor."
+            ),
+            source_functions=(
+                "ssf.step_rpe_compute_enhancement2",
+                "suf.peakSuppressor.peak_suppression_pipeline",
+                "suf.peakSuppressor.suppress_below_third_peak_valley",
+            ),
+            get_array=lambda ilm, rpe: _get(rpe, "peak_suppressed"),
+        ),
+        ReadmePanel(
+            slug="09_lowres_dp_cost",
+            title="Low-resolution DP cost after ILM suppression",
+            description=(
+                "`step_rpe_DP_on_enh_2` suppresses the response surrounding the ILM guide, converts "
+                "the remaining peak-suppressed response to a cost image, and uses it for the "
+                "preliminary RPE dynamic-programming pass."
+            ),
+            source_functions=(
+                "ssf.step_rpe_DP_on_enh_2",
+                "suf.apply_gaussian_tube_suppression",
+                "suf.run_DP_on_cost_matrix",
+            ),
+            get_array=lambda ilm, rpe: 1-_get(rpe, "rpe_enh_DP_cost_raw")
             if _get(rpe, "rpe_enh_DP_cost_raw") is not None
             else _get(rpe, "guided_cost_raw"),
-            # get_lines=lambda ilm, rpe: _line_dict(rpe_smooth=_get(rpe, "rpe_smooth")),
         ),
         ReadmePanel(
-            slug="08_lowres_rpe_on_raw",
-            title="Low-resolution RPE path on raw image",
+            slug="10_preliminary_rpe_on_raw",
+            title="Preliminary RPE segmentation on the raw B-scan",
             description=(
-                "After `step_rpe_upsample` and `step_rpe_unsmooth`, the coarse RPE estimate is returned "
-                "to the original B-scan coordinate space."
+                "After `step_rpe_upsample` and `step_rpe_unsmooth`, the preliminary RPE estimate is "
+                "returned to the original B-scan coordinate space."
             ),
             source_functions=("ssf.step_rpe_upsample", "ssf.step_rpe_unsmooth"),
             get_array=lambda ilm, rpe: _get(rpe, "original_image"),
             get_lines=lambda ilm, rpe: _line_dict(
-                hypersmoothed=_get(rpe, "hypersmoother_params.hypersmoother_path"),
+                # hypersmoothed=_get(rpe, "hypersmoother_params.hypersmoother_path"),
                 rpe_smooth=_get(rpe, "rpe_smooth"),
             ),
         ),
         ReadmePanel(
-            slug="09_highres_diff_image",
-            title="High-resolution differential image",
+            slug="11_flattened_to_preliminary_rpe",
+            title="B-scan flattened to the preliminary RPE",
             description=(
-                "`step_rpe_highres_diff_enh` builds a local high-resolution differential/gradient image "
-                "around the RPE complex."
+                "`step_rpe_highres_smooth` flattens the original B-scan to the preliminary RPE "
+                "segmentation. This more precise flattening supports the subsequent high-resolution "
+                "gradient and horizontal-blurring operations."
             ),
-            source_functions=("ssf.step_rpe_highres_smooth", "ssf.step_rpe_highres_diff_enh"),
-            get_array=lambda ilm, rpe: _get(rpe, "highres_ctx.diff_down_up"),
+            source_functions=(
+                "ssf.step_rpe_highres_smooth",
+                "flattening_utility_functions.flatten_to_path",
+            ),
+            get_array=lambda ilm, rpe: _get(rpe, "highres_smoothed_img"),
         ),
         ReadmePanel(
-            slug="10_lower_edge_of_tubed",
-            title="Lower-edge candidate image",
+            slug="12_highres_hblur_down",
+            title="Horizontally blurred downward-gradient response",
             description=(
-                "A high-resolution image with regions far from RPE proposal suppressed, highlighting the lower edge used by later DP refinement."
+                "The high-resolution bright-to-dark axial-gradient response is anisotropically "
+                "blurred in the horizontal direction. This reinforces horizontally aligned retinal "
+                "bands while smearing less consistently oriented choroidal structures. This is "
+                "`hblur_down` from `diff_boundary_enhance_and_blur_horiz`."
             ),
-            source_functions=("ssf.step_rpe_highres_diff_enh",),
+            source_functions=(
+                "ssf.step_rpe_highres_diff_enh",
+                "suf.diff_boundary_enhance_and_blur_horiz",
+            ),
+            get_array=lambda ilm, rpe: _highres_hblur_down(rpe),
+        ),
+        ReadmePanel(
+            slug="13_highres_hblur_up",
+            title="Horizontally blurred upward-gradient response",
+            description=(
+                "The high-resolution dark-to-bright axial-gradient response is anisotropically "
+                "blurred in the horizontal direction using the corresponding `up_hblur` setting. "
+                "This is `hblur_up` from `diff_boundary_enhance_and_blur_horiz`."
+            ),
+            source_functions=(
+                "ssf.step_rpe_highres_diff_enh",
+                "suf.diff_boundary_enhance_and_blur_horiz",
+            ),
+            get_array=lambda ilm, rpe: _highres_hblur_up(rpe),
+        ),
+        ReadmePanel(
+            slug="14_highres_diff_image",
+            title="High-resolution differential gradient image",
+            description=(
+                "The horizontally blurred upward-gradient response is subtracted from the "
+                "horizontally blurred downward-gradient response, negative values are removed, "
+                "and the result is normalized. This reduces residual choroidal signal while "
+                "preserving the horizontally aligned RPE complex."
+            ),
+            source_functions=(
+                "ssf.step_rpe_highres_smooth",
+                "ssf.step_rpe_highres_diff_enh",
+                "suf.diff_boundary_enhance_and_blur_horiz",
+            ),
+            get_array=lambda ilm, rpe: _highres_diff_down_up(rpe),
+        ),
+        ReadmePanel(
+            slug="15_lower_edge_of_tubed",
+            title="RPE-constrained high-resolution candidate image",
+            description=(
+                "The preliminary RPE segmentation suppresses regions distant from the expected RPE "
+                "location. A final narrow axial-gradient operation sharpens the lower edge used by "
+                "the subsequent two-layer DP pathways."
+            ),
+            source_functions=(
+                "ssf.step_rpe_highres_diff_enh",
+                "suf.apply_gaussian_tube_mul",
+                "suf._normalized_axial_gradient",
+            ),
             get_array=lambda ilm, rpe: _get(rpe, "highres_ctx.lower_edge_of_tubed"),
         ),
         ReadmePanel(
-            slug="11_original_two_layer_dp",
-            title="Original two-layer DP proposal",
+            slug="16_original_two_layer_dp",
+            title="Standard two-layer DP proposal",
             description=(
-                "`step_rpe_highres_DP_two_layer` estimates a paired-surface proposal in the high-resolution band."
+                "`step_rpe_highres_DP_two_layer` simultaneously estimates two bright retinal "
+                "surfaces within the high-resolution DP image band. Both native band-coordinate "
+                "paths are overlaid."
             ),
             source_functions=("ssf.step_rpe_highres_DP_two_layer", "two_surface_utils"),
-            get_array=lambda ilm, rpe: _get(rpe, "original_image"),
+            get_array=lambda ilm, rpe: _get(rpe, "two_layer_dp_ctx.img_band"),
             get_lines=lambda ilm, rpe: _line_dict(
-                original_method_y1=_get(rpe, "two_layer_dp_ctx.y1_rescaled"),
-                original_method_y2=_get(rpe, "two_layer_dp_ctx.y2_rescaled"),
+                original_method_y1=_get(rpe, "two_layer_dp_ctx.y1"),
+                original_method_y2=_get(rpe, "two_layer_dp_ctx.y2"),
             ),
         ),
         ReadmePanel(
-            slug="12_choroidal_two_layer_dp",
-            title="Choroidal-oriented proposal",
+            slug="17_choroidal_two_layer_dp",
+            title="Choroidal-oriented two-layer proposal",
             description=(
-                "`step_rpe_highres_DP_two_layer_choroidal` reruns/refines the RPE paired-surface logic with a "
-                "focus on images with high choroidal signal."
+                "`step_rpe_highres_DP_two_layer_choroidal` reruns the paired-surface logic using its "
+                "choroidal-oriented DP image band."
             ),
             source_functions=("ssf.step_rpe_highres_DP_two_layer_choroidal",),
-            get_array=lambda ilm, rpe: _get(rpe, "original_image"),
+            get_array=lambda ilm, rpe: _get(rpe, "two_layer_dp_ctx_choroidal.img_band"),
             get_lines=lambda ilm, rpe: _line_dict(
-                choroidal_method_y1=_get(rpe, "two_layer_dp_ctx_choroidal.y1_rescaled"),
-                choroidal_method_y2=_get(rpe, "two_layer_dp_ctx_choroidal.y2_rescaled"),
+                choroidal_method_y1=_get(rpe, "two_layer_dp_ctx_choroidal.y1"),
+                choroidal_method_y2=_get(rpe, "two_layer_dp_ctx_choroidal.y2"),
             ),
         ),
         ReadmePanel(
-            slug="13_ez_two_layer_dp",
-            title="EZ-oriented proposal",
+            slug="18_ez_two_layer_dp",
+            title="EZ-oriented two-layer proposal",
             description=(
-                "`step_rpe_highres_DP_two_layer_EZ` preserves a paired-surface RPE proposal for "
-                "images with robust EZ band."
+                "`step_rpe_highres_DP_two_layer_EZ` estimates paired surfaces within its EZ-oriented "
+                "high-resolution DP image band."
             ),
             source_functions=("ssf.step_rpe_highres_DP_two_layer_EZ",),
-            get_array=lambda ilm, rpe: _get(rpe, "original_image"),
+            get_array=lambda ilm, rpe: _get(rpe, "two_layer_dp_ctx_EZ.img_band"),
             get_lines=lambda ilm, rpe: _line_dict(
-                EZ_method_y1=_get(rpe, "two_layer_dp_ctx_EZ.y1_rescaled"),
-                EZ_method_y2=_get(rpe, "two_layer_dp_ctx_EZ.y2_rescaled"),
+                EZ_method_y1=_get(rpe, "two_layer_dp_ctx_EZ.y1"),
+                EZ_method_y2=_get(rpe, "two_layer_dp_ctx_EZ.y2"),
             ),
         ),
         ReadmePanel(
-            slug="14_vertical_shift_refinement",
+            slug="19_vertical_shift_refinement",
             title="Vertical-shift refinement",
             description=(
-                "`step_rpe_vertical_shift_refine` aligns/refines the proposal lines vertically before export."
+                "`step_rpe_vertical_shift_refine` aligns and refines the proposal lines vertically "
+                "before export."
             ),
             source_functions=("ssf.step_rpe_vertical_shift_refine",),
             get_array=lambda ilm, rpe: _get(rpe, "original_image"),
@@ -297,26 +565,16 @@ def default_segmentation_readme_panels() -> list[ReadmePanel]:
             ),
         ),
         ReadmePanel(
-            slug="15_final_exported_lines",
-            title="Final exported lines",
+            slug="20_final_exported_rpe",
+            title=f"Final exported RPE line: {final_rpe_pathway}",
             description=(
-                "Final compact set of paths saved into the segmentation `.npz` outputs for downstream flattening "
-                "and texture projection."
+                "Final RPE path selected for display from the original, choroidal, or EZ pathway. "
+                "Only the selected RPE line is shown on the original B-scan."
             ),
             source_functions=("setup_data/02_segment_ILM_RPE.py::extract_lite",),
             get_array=lambda ilm, rpe: _get(rpe, "original_image"),
-            get_lines=lambda ilm, rpe: _line_dict(
-                ilm_smooth=_get(ilm, "ilm_smooth"),
-                rpe_smooth=_get(rpe, "rpe_smooth"),
-                original_RPE=_get(rpe, "two_layer_dp_ctx.y2_vertical_shifted")
-                if _get(rpe, "two_layer_dp_ctx.y2_vertical_shifted") is not None
-                else _get(rpe, "two_layer_dp_ctx.y2_rescaled"),
-                choroidal_RPE=_get(rpe, "two_layer_dp_ctx_choroidal.y1_vertical_shifted")
-                if _get(rpe, "two_layer_dp_ctx_choroidal.y1_vertical_shifted") is not None
-                else _get(rpe, "two_layer_dp_ctx_choroidal.y1_rescaled"),
-                EZ_RPE=_get(rpe, "two_layer_dp_ctx_EZ.y2_vertical_shifted")
-                if _get(rpe, "two_layer_dp_ctx_EZ.y2_vertical_shifted") is not None
-                else _get(rpe, "two_layer_dp_ctx_EZ.y2_rescaled"),
+            get_lines=lambda ilm, rpe, pathway=final_rpe_pathway: _line_dict(
+                rpe_smooth=_selected_final_rpe_line(rpe, pathway),
             ),
         ),
     ]
@@ -351,12 +609,15 @@ def save_segmentation_readme_panels(
     dpi: int = 300,
     transparent: bool = True,
     write_manifest: bool = True,
+    final_rpe_pathway: str = "original",
 ) -> list[dict]:
     """Save the available README panels and return manifest rows."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    panels = panels or default_segmentation_readme_panels()
+    panels = panels or default_segmentation_readme_panels(
+        final_rpe_pathway=final_rpe_pathway,
+    )
 
     rows: list[dict] = []
     for idx, panel in enumerate(panels, start=1):
@@ -398,24 +659,3 @@ def save_segmentation_readme_panels(
     return rows
 
 
-def step_rpe_save_readme_panels(ctx):
-    """Optional RPE pipeline step: save README panels at the end of a debug run.
-
-    Add this as the final step in a one-off/debug pipeline:
-
-        RPE_STEPS_readme = sp.RPE_STEPS_unified_3_19_26 + [
-            step_rpe_save_readme_panels,
-        ]
-
-    It expects `ctx.ilm_ctx` to be present, as in `sp.process_bscan_1_3_26`.
-    """
-    # out_dir = Path("docs/assets/segmentation_panels") / str(ctx.ID)
-    out_dir = Path("docs/assets/segmentation_panels") / "demo_panels"
-    save_segmentation_readme_panels(
-        ctx_ilm=ctx.ilm_ctx,
-        ctx_rpe=ctx,
-        out_dir=out_dir,
-        # prefix=str(ctx.ID).replace("/", "_").replace(":", "_"),
-        prefix="demo_segmentations",
-    )
-    return ctx

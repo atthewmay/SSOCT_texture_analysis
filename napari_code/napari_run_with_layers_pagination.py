@@ -97,7 +97,16 @@ def parse_args():
     p.add_argument("--texture_features", type=str, default=None)
     p.add_argument("--ez_outputs_root", type=str, default=None)
 
-
+    p.add_argument(
+        "--label_sets",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated label sets to rebuild. "
+            "Default: all configured sets. "
+            "Example: RPE_only_original,rpe_slab_10_20_original"
+        ),
+    )
 
     return p.parse_args()
 
@@ -184,7 +193,9 @@ def load_one_volume(
     show_texture_overlay=False,
     texture_zarr_root=None,
     texture_features=None,   # None -> all
-    ez_outputs_root=None
+    ez_outputs_root=None,
+    label_sets=None,
+
 ):
     """
     Return (img, lbl, annotation_img, name) for one volume.
@@ -214,6 +225,7 @@ def load_one_volume(
             layers_root=layers_root,
             annotation_root=annotation_root,
             ez_outputs_root=ez_outputs_root,
+            label_sets=label_sets,
             z_stride=1,              # keep cached raw artifacts full-Z
             overwrite=overwrite,
             make_image_zarr=True,
@@ -312,6 +324,14 @@ def main():
         print("will by default overwrite_labels bc overwrithe_files=True")
         OVERWRITE_LABELS = True
 
+    label_sets = None
+    if args.label_sets:
+        label_sets = [
+            value.strip()
+            for value in args.label_sets.split(",")
+            if value.strip()
+        ]
+
     ALL_VOL_PATHS = fu.get_all_vol_paths(args.vol_dir,glob=args.glob,cube_numbers=args.cube_numbers,use_skip_yaml=args.use_skip_yaml)
 
     print(f"[pager] Found {len(ALL_VOL_PATHS)} volumes")
@@ -378,6 +398,7 @@ def main():
                 texture_zarr_root=args.texture_zarr_root,
                 texture_features=texture_features,
                 ez_outputs_root=args.ez_outputs_root,
+                label_sets=label_sets,
             )
 
 

@@ -19,6 +19,8 @@ from matplotlib import pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import code_files.segmentation_code.segmentation_plot_utils as spu
 import code_files.segmentation_code.segmentation_pipelines as sp
+from code_files.methods_paper_figures.fig_w_and_wo_darkness_barrier_07_05_26 import ILM_FIG3_DARKNESS_BARRIER_STEPS_WITH_SAVE
+from code_files.methods_paper_figures.figs_456_RPE_pipeline import RPE_PAPER_FIGURE_STEPS
 
 import dask.array as da
 
@@ -281,14 +283,22 @@ def main():
         # ilm_segmentation_steps = sp.ILM_STEPS_2_27_26_take2
     # else:
         # ilm_segmentation_steps = sp.ILM_STEPS_12_5_25
-    ilm_segmentation_steps = sp.ILM_STEPS_2_28
+    # ilm_segmentation_steps = sp.ILM_STEPS_2_28 # current steps
+    ilm_segmentation_steps = sp.ILM_STEPS_README_DEMO # current steps with good readme output
+    # ilm_segmentation_steps = ILM_FIG3_DARKNESS_BARRIER_STEPS_WITH_SAVE # just for the demo of w/ and w/o DB. 
+
+
+
     # rpe_segmentation_steps = sp.RPE_STEPS_2_27_26
     # rpe_segmentation_steps = sp.RPE_STEPS_2_28_26
     # rpe_segmentation_steps = sp.RPE_STEPS_3_7_26
     # rpe_segmentation_steps = sp.RPE_STEPS_CHOROIDAL_3_9_26
-    # rpe_segmentation_steps = sp.RPE_STEPS_3_19_26_withplot
+    rpe_segmentation_steps = sp.RPE_STEPS_3_19_26_withplot
     # rpe_segmentation_steps = sp.RPE_STEPS_ARVO2026
-    rpe_segmentation_steps = sp.RPE_STEPS_README_DEMO
+    # rpe_segmentation_steps = sp.RPE_STEPS_README_DEMO
+    # rpe_segmentation_steps = RPE_PAPER_FIGURE_STEPS
+
+    # rpe_segmentation_steps = sp.RPE_STEPS_debug_8_5_26
     # if args.RPE_OR_ILM == 'RPE':
     if args.debug or args.max_workers <= 1:
         # Serial, pdb-friendly path
@@ -300,6 +310,7 @@ def main():
             results = [f.result() for f in futures]
 
     # Sort by the artificial order index (so page 1 is the current slice)
+    raise Exception("Should be done here in seg_runner_new")
     results.sort(key=lambda x: x[0])
     args.out.parent.mkdir(parents=True, exist_ok=True)
     spu.save_results_in_PDF(results,args.out)

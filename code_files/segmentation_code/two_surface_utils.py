@@ -392,6 +392,7 @@ def run_two_surface_DP(
     # --------- NMS-based anchor2 + kappa[j] ----------
     anchor2 = np.zeros(W, dtype=np.int32)
     kappa = np.zeros(W, dtype=float)
+    peaks = None
     # nms_maxima2 = None
 
     # -------------make inverse of cost two -----------
@@ -511,7 +512,7 @@ def run_two_surface_DP(
             if kappa[j] != 0.0:
                 if kappa_mode == 'abs_dist':
                     extra += kappa[j] * abs(i2 - int(anchor2[j]))
-                elif kappa_mode == 'reweight':
+                elif kappa_mode == 'reweight': # This is used as of 7/14/26
                     pass # will adjust below
                 else:
                     raise Exception

@@ -168,13 +168,19 @@ def clean_sweep_pdfs(base_dir=PDF_ROOT):
 LAYER_STYLE = {
     'rpe_raw'              : dict(fmt='m--', lw=0.5, label='raw'),
     'rpe_smooth'           : dict(fmt='y-',  alpha = 0.6,lw=0.5, label='rigid'),
+    'rpe_smooth_wide'           : dict(fmt='y-',  alpha = 0.8,lw=1),
     'lower_edge_line'           : dict(fmt='r-',  alpha = 0.6,lw=0.5, label='lower_line (not smoothed)'),
     'rpe_guided'           : dict(fmt='c-',  lw=0.5, label='rigid'),
     'rpe_guided_tube_smoothed'           : dict(fmt='c-',  lw=0.5, label='rigid'),
     'ilm_seg'              : dict(fmt='m--', lw=0.5, label='ilm_seg'),
-    'ilm_seg_flat'              : dict(fmt='m--', lw=0.5, label='ilm_seg_flat'),
+    'ilm_seg_flat'              : dict(fmt='y-', lw=0.5, label='ilm_seg_flat'),
     'ilm_raw'              : dict(fmt='m--', lw=0.5, label='raw'),
+    # 'ilm_raw'              : dict(fmt='y-', lw=0.5, label='raw'),
     'ilm_smooth'           : dict(fmt='y-',  lw=0.5, label='rigid'),
+
+    'fig3_ilm_no_db_orig'  : dict(fmt='c-',  alpha = 0.7, lw=0.5),
+    'fig3_ilm_with_db_orig'  : dict(fmt='r--',  alpha = 0.7, lw=0.5),
+
     'DP_enh_vertical_window': dict(fmt='c--', lw=1, label='DP enh-win'),
     'DP_enh_sobel'          : dict(fmt='r--', lw=1, label='DP enh-sobel'),
     'DP_img_vertical_window': dict(fmt='c--', lw=1, label='DP img-win'),

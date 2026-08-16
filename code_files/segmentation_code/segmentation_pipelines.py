@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # adds Han_AIR/ to path
 import code_files.segmentation_code.segmentation_step_functions as ssf
+from code_files.segmentation_code.ILM_segmentation_readme_panels import step_ilm_save_readme_panels
 from typing import List
 
 # RPE_STEPS_12_5_25: List[ssf.RPEStepFn] = [
@@ -587,3 +588,10 @@ RPE_STEPS_ARVO2026: List[ssf.RPEStepFn] = RPE_STEPS_unified_3_19_26[:-1] + [ssf.
 RPE_STEPS_README_DEMO: List[ssf.RPEStepFn] = RPE_STEPS_unified_3_19_26[:-1] + [ssf.ckpt(ssf.step_rpe_vertical_shift_refine,overwrite=False,save_by_ID=True,type="RPE")] + [ssf.step_rpe_export_readme_panels]
 
 RPE_STEPS_3_19_26_withplot: List[ssf.RPEStepFn] = RPE_STEPS_unified_3_19_26[:-1] + [ssf.ckpt(ssf.step_rpe_vertical_shift_refine,overwrite=True,save_by_ID=True,type="RPE")] + [ssf.step_rpe_choroidal_EZ_endpoint_plot]
+
+ILM_demo_steps = gen_ILM_STEPS_2_28(overwrite=True)
+ILM_STEPS_README_DEMO: List[ssf.RPEStepFn] = ILM_demo_steps + [step_ilm_save_readme_panels]
+
+
+RPE_STEPS_8_14_26: List[ssf.RPEStepFn] = [RPE_STEPS_unified_3_19_26[0]] + [ssf.step_rpe_hypersmoother_8_5_26] + RPE_STEPS_unified_3_19_26[2:]  # addresses the poor hypersmoother performance around the ONH region. This is the onl change
+    

@@ -360,6 +360,7 @@ def save_ilm_segmentation_readme_panels(
     write_manifest: bool = True,
 ) -> list[dict]:
     """Save ILM README/paper panels and return manifest rows."""
+    import matplotlib.pyplot as plt
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -395,6 +396,7 @@ def save_ilm_segmentation_readme_panels(
             }
         )
 
+
     if write_manifest:
         write_manifest_md(
             rows,
@@ -402,14 +404,55 @@ def save_ilm_segmentation_readme_panels(
             title="ILM segmentation algorithm panels",
         )
 
-    return rows
+    # Combined figure preview
+    if rows:
+        ncols = min(5, len(rows))
+        nrows = (len(rows) + ncols - 1) // ncols
+
+        fig, axes = plt.subplots(
+            nrows,
+            ncols,
+            figsize=(4 * ncols, 4 * nrows),
+            squeeze=False,
+        )
+        axes = axes.ravel()
+
+        for ax, row in zip(axes, rows):
+            ax.imshow(plt.imread(row["filename"]))
+            ax.axis("off")
+
+            letter = chr(ord("A") + row["index"] - 1)
+            ax.text(
+                0.02, 0.98,
+                letter,
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=18,
+                fontweight="bold",
+                color="white",
+            )
+
+        for ax in axes[len(rows):]:
+            ax.axis("off")
+
+        fig.tight_layout()
+        fig.savefig(
+            out_dir / f"{prefix}_preview.png",
+            dpi=dpi,
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+
+    return rows 
+
 
 
 def step_ilm_save_readme_panels(ctx_ilm):
     """Optional endpoint step if you want to import this function directly in a debug pipeline."""
     save_ilm_segmentation_readme_panels(
         ctx_ilm=ctx_ilm,
-        out_dir="/Volumes/T9/iowa_research/Han_AIR_Dec_2025/results/ILM_segmentation_panels/",
+        out_dir="/Volumes/T9/iowa_research/Han_AIR_Dec_2025/results/ILM_segmentation_panels_8_12_26/",
         prefix="ilm",
     )
     return ctx_ilm

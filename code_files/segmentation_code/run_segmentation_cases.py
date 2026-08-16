@@ -131,11 +131,15 @@ python run_segmentation_cases.py
 Optional explicit Docker paths:
 
 python run_segmentation_cases.py 
-    --vol-id 2 
+    --vol-id 24 
     --side OD 
-    --slice-id 544 
-    --pipeline-module /untrusted/test_pipeline.py 
+    --slice-id 512 
+    --pipeline-module /code_untrusted/test_pipeline.py 
     --pipeline PIPELINE 
-    --volumes-root /data/volumes 
-    --annotation-root /data/annotations
+    --volumes-root /Volumes/T9/iowa_research/Han_AIR_Dec_2025/data_volumes/data_all_volumes2
+    --annotation-root /Users/matthewhunt/Research/Iowa_Research/Han_AIR/annotations_dir/full_annotations_2_19_26
+
+python code_files/segmentation_code/run_segmentation_cases.py --vol-id 24 --side OD --slice-id 512 --pipeline-module /code_untrusted/test_pipeline.py --pipeline PIPELINE --volumes-root /Volumes/T9/iowa_research/Han_AIR_Dec_2025/data_volumes/data_all_volumes2 --annotation-root /Users/matthewhunt/Research/Iowa_Research/Han_AIR/annotations_dir/full_annotations_2_19_26
+
+
 """

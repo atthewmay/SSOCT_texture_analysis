@@ -583,7 +583,9 @@ def load_algorithm_key_lookup(path):
 
 
 def get_algorithm_key_from_filepath(filepath):
-    lookup = load_algorithm_key_lookup(C['ID_to_algorithm_lookup_path'])
+    lookup_path = Path(__file__).resolve().with_name("ID_2_algo_map.csv")
+    # lookup = load_algorithm_key_lookup(C['ID_to_algorithm_lookup_path'])
+    lookup = load_algorithm_key_lookup(lookup_path)
     s = str(Path(filepath).name)
 
     integer_id = int(re.search(r'(\d+)_Cube', s).group(1))
