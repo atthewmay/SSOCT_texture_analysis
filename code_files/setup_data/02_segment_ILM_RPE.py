@@ -354,6 +354,8 @@ if __name__ == "__main__":
     ILM_STEPS = sp.ILM_STEPS_2_28  # swap to your desired list
     # RPE_STEPS = sp.RPE_STEPS_2_28_26  # swap to your desired list
     RPE_STEPS = sp.RPE_STEPS_unified_3_19_26  # swap to your desired list
+    RPE_STEPS = sp.sp.RPE_STEPS_8_14_26 # swap to your desired list
+
 
     ALL_VOL_PATHS = fu.get_all_vol_paths(args.volumes_root,args.pattern,args.cube_numbers)
     print(f"going to be processing {ALL_VOL_PATHS}")
