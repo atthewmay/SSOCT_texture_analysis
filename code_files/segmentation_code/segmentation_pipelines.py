@@ -4,6 +4,8 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))  # adds Han_AIR/ to pa
 import code_files.segmentation_code.segmentation_step_functions as ssf
 from code_files.segmentation_code.ILM_segmentation_readme_panels import step_ilm_save_readme_panels
 from typing import List
+from time import perf_counter
+
 
 # RPE_STEPS_12_5_25: List[ssf.RPEStepFn] = [
 #     ssf.step_rpe_downsample_and_preprocess,
@@ -127,8 +129,11 @@ def process_bscan_1_3_26(idx_and_img,production_mode,rpe_seg_steps,ilm_seg_steps
                     original_image=bscan.copy(),
                     ONH_region=ONH_info,
                     cfg=ilm_config)
-    ilm_ctx = ssf.run_pipeline(ilm_ctx,steps=ilm_seg_steps)
 
+    # t0 = perf_counter()
+    ilm_ctx = ssf.run_pipeline(ilm_ctx,steps=ilm_seg_steps)
+    # Existing ILM pipeline execution
+    # t1 = perf_counter()
     rpe_config = ssf.RPEConfig()
     highres_rpe_config = ssf.HighResConfig()
     highres_rpe_context = ssf.HighResContext()
@@ -146,7 +151,14 @@ def process_bscan_1_3_26(idx_and_img,production_mode,rpe_seg_steps,ilm_seg_steps
                         ilm_seg=ilm_ctx.ilm_smooth,
                         ilm_ctx=ilm_ctx,
                         ONH_region=ONH_info)
+    # t0_rpe = perf_counter()
     rpe_ctx = ssf.run_pipeline(rpe_ctx,steps=rpe_seg_steps)
+    # Existing RPE pipeline execution
+    # t1_rpe = perf_counter()
+
+    # print(f"ILM: {t1-t0:.3f}s | RPE: {t1_rpe-t0_rpe:.3f}s | Total: {((t1-t0)+(t1_rpe-t0_rpe)):.3f}s", flush=True)
+
+
     # print(rpe_ctx.highres_cfg)
     
     if PICKLE_CTX:
