@@ -1,0 +1,35 @@
+# Ignore everything by default
+/*
+!.gitignore
+
+# Allow the three parent code directories
+!code_files/
+!napari_code/
+!code_files/data_setup/
+
+# Allow only Python files under those dirs
+!code_files/**/*.py
+!napari_code/**/*.py
+!data_setup/**/*.py
+
+# Explicitly ignore any data_* dirs under them (optional safety)
+# code_files/**/data_*/
+# napari_code/**/data_*/
+# data_setup/**/data_*/
+data_*
+
+# Python junk
+__pycache__/
+*.pyc
+
+# Never track YAML anywhere
+*.yml
+*.yaml
+
+!unified_envs/ssoct_texture.yaml
+
+# Ignore the readme panels for now
+# Generated README figure panels
+**/read_me_panels/
+**/readme_panels/
+**/readme_panels_output/
